@@ -1,58 +1,25 @@
 # ========================
 # WireGuard - SENSITIVE
 # ========================
-*.conf
 *.key
+*.priv
 *.pem
+*.pub
+presharedkey
 wg0.conf
 wg1.conf
-privatekey
-publickey
-presharedkey
 
 # ========================
-# VSCode
+# ldown - SENSITIVE
 # ========================
-.vscode/
-*.code-workspace
-.history/
+keys/*
+!keys/.gitkeep
+logs/*
+!logs/.gitkeep
+conf/ldown.conf
 
 # ========================
-# Logs
+# Configs - keep examples/defaults
 # ========================
-*.log
-logs/
-*.out
-
-# ========================
-# OS - Windows
-# ========================
-Thumbs.db
-Desktop.ini
-$RECYCLE.BIN/
-ehthumbs.db
-
-# ========================
-# OS - Linux
-# ========================
-*~
-.fuse_hidden*
-.Trash-*
-.nfs*
-
-# ========================
-# Shell Scripts
-# ========================
-*.swp
-*.swo
-*.bak
-*.tmp
-
-# ========================
-# Environment / Secrets
-# ========================
-.env
-.env.*
-secrets/
-credentials/
-config/private/
+!conf/ldown.conf.example
+!conf/defaults.conf
