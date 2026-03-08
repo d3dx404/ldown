@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# bin/ldown
+
+LDOWN_VERSION="0.1.0"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../lib/common.sh"
+source "${SCRIPT_DIR}/../lib/wireguard.sh"
+
+log_init "" 1
+
+case "${1:-}" in
+  keygen)
+    banner
+    step "generating wireguard keypair"
+    { read -r priv; read -r pub; } < <(wg_generate_keypair)
+    printf '\n'
+    status_ok "private key" "${priv}"
+    status_ok "public key"  "${pub}"
+    printf '\n'
+    ;;
+  *)
+    printf 'usage: ldown keygen\n'
+    exit 1
+    ;;
+esac
