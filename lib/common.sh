@@ -325,7 +325,7 @@ must() {
     return 0
   fi
 
-  (( _CMD_SEQ++ ))
+  _CMD_SEQ=$((_CMD_SEQ + 1))
   local cmd_id
   printf -v cmd_id 'cmd_%04d' "${_CMD_SEQ}"
   debug "must [${cmd_id}]: ${desc}"

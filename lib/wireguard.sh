@@ -232,3 +232,56 @@ wg_handshake_age() {
 
   printf '%s\n' "$(( now - ts ))"
 }
+
+# ── diagnostics ────────────────────────────────────────────
+# pure return codes — no UI, no printing
+
+check_interface() {
+  local iface="$1"
+  ip link show "${iface}" &>/dev/null
+}
+
+check_wireguard_running() {
+  local iface="$1"
+  wg show "${iface}" &>/dev/null
+}
+
+check_peer_configured() {
+  local iface="$1"
+  wg show "${iface}" peers 2>/dev/null | grep -q .
+}
+
+check_handshake() {
+  local iface="$1"
+  wg show "${iface}" latest-handshakes 2>/dev/null \
+    | awk '{print $2}' \
+    | grep -q '[1-9]'
+}
+
+check_recent_handshake() {
+  local iface="$1"
+  local max_age="${2:-60}"
+
+  local now ts peer
+  printf -v now '%(%s)T' -1
+
+  while read -r peer ts < <(wg show "${iface}" latest-handshakes 2>/dev/null); do
+    [[ "${ts}" -eq 0 ]] && continue
+    (( now - ts <= max_age )) && return 0
+  done
+
+  return 1
+}
+
+wait_for_handshake() {
+  local iface="$1"
+  local timeout="${2:-20}"
+
+  local i
+  for (( i = 0; i < timeout; i++ )); do
+    check_handshake "${iface}" && return 0
+    sleep 1
+  done
+
+  return 1
+}

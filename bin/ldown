@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# bin/ldown
 
 LDOWN_VERSION="0.1.0"
 
@@ -9,18 +8,407 @@ source "${SCRIPT_DIR}/../lib/wireguard.sh"
 
 log_init "" 1
 
-case "${1:-}" in
-  keygen)
-    banner
-    step "generating wireguard keypair"
-    { read -r priv; read -r pub; } < <(wg_generate_keypair)
+# ── commands ───────────────────────────────────────────────
+
+cmd_keygen() {
+  local name="server"
+  local keydir="${LDOWN_KEY_DIR:-/etc/ldown/keys}"
+  local rotate=false
+  local show_only=false
+  local export_pub=false
+  local format="text"
+  local comment=""
+
+  while [[ -n "${1:-}" ]]; do
+    case "$1" in
+      --name)    name="$2";    shift 2 ;;
+      --dir)     keydir="$2";  shift 2 ;;
+      --rotate)  rotate=true;  shift   ;;
+      --show)    show_only=true; shift ;;
+      --export)  export_pub=true; shift ;;
+      --format)  format="$2";  shift 2 ;;
+      --comment) comment="$2"; shift 2 ;;
+      *)
+        err "unknown option: $1"
+        printf 'usage: ldown keygen [--name <name>] [--dir <dir>] [--rotate] [--show] [--export] [--format text|json] [--comment <text>]\n'
+        exit 1
+        ;;
+    esac
+  done
+
+  local privfile="${keydir}/${name}.private.key"
+  local pubfile="${keydir}/${name}.public.key"
+  local metafile="${keydir}/${name}.meta"
+
+  # ── show only ──────────────────────────────────────────
+  if [[ "${show_only}" == true ]]; then
+    [[ -f "${pubfile}" ]] || fatal "no keypair found for '${name}' in ${keydir}"
+    local pub
+    pub=$(cat "${pubfile}")
+    case "${format}" in
+      json) printf '{"name":"%s","public_key":"%s"}\n' "${name}" "${pub}" ;;
+      *)
+        status_ok "name"       "${name}"
+        status_ok "public key" "${pub}"
+        [[ -f "${metafile}" ]] && cat "${metafile}"
+        ;;
+    esac
+    return 0
+  fi
+
+  # ── export public key only ─────────────────────────────
+  if [[ "${export_pub}" == true ]]; then
+    [[ -f "${pubfile}" ]] || fatal "no keypair found for '${name}'"
+    cat "${pubfile}"
+    return 0
+  fi
+
+  # ── existing key check ─────────────────────────────────
+  if [[ -f "${privfile}" && -f "${pubfile}" && "${rotate}" == false ]]; then
+    local existing_pub
+    existing_pub=$(cat "${pubfile}")
+    info "existing keypair found for '${name}' — use --rotate to regenerate"
     printf '\n'
-    status_ok "private key" "${priv}"
-    status_ok "public key"  "${pub}"
+    case "${format}" in
+      json)
+        printf '{"name":"%s","public_key":"%s","status":"existing"}\n' \
+          "${name}" "${existing_pub}"
+        ;;
+      *)
+        status_ok "name"       "${name}"
+        status_ok "public key" "${existing_pub}"
+        status_ok "location"   "${keydir}"
+        [[ -f "${metafile}" ]] && cat "${metafile}"
+        ;;
+    esac
     printf '\n'
-    ;;
-  *)
-    printf 'usage: ldown keygen\n'
-    exit 1
-    ;;
-esac
+    return 0
+  fi
+
+  # ── backup before rotate ───────────────────────────────
+  if [[ "${rotate}" == true && -f "${privfile}" ]]; then
+    local ts
+    printf -v ts '%(%Y%m%d_%H%M%S)T' -1
+    mv "${privfile}" "${privfile}.${ts}.bak"
+    mv "${pubfile}"  "${pubfile}.${ts}.bak"
+    warn "previous keypair backed up with timestamp ${ts}"
+  fi
+
+  # ── generate ───────────────────────────────────────────
+  step "generating wireguard keypair — ${name}"
+
+  mkdir -p "${keydir}"
+  chmod 700 "${keydir}"
+
+  local priv pub
+  { read -r priv; read -r pub; } < <(wg_generate_keypair)
+
+  printf '%s\n' "${priv}" > "${privfile}"
+  printf '%s\n' "${pub}"  > "${pubfile}"
+  chmod 600 "${privfile}" "${pubfile}"
+
+  # ── metadata ───────────────────────────────────────────
+  local ts
+  printf -v ts '%(%Y-%m-%d %H:%M:%S)T' -1
+  {
+    printf '  created    : %s\n' "${ts}"
+    printf '  name       : %s\n' "${name}"
+    [[ -n "${comment}" ]] && printf '  comment    : %s\n' "${comment}"
+  } > "${metafile}"
+
+  printf '\n'
+  case "${format}" in
+    json)
+      printf '{"name":"%s","public_key":"%s","private_key_file":"%s","created":"%s"}\n' \
+        "${name}" "${pub}" "${privfile}" "${ts}"
+      ;;
+    *)
+      status_ok "name"              "${name}"
+      status_ok "public key"        "${pub}"
+      status_ok "private key saved" "${privfile}"
+      status_ok "public key saved"  "${pubfile}"
+      [[ -n "${comment}" ]] && status_ok "comment" "${comment}"
+      status_ok "created"           "${ts}"
+      ;;
+  esac
+  printf '\n'
+  warn "private key written to ${privfile} — do not share"
+  printf '\n'
+}
+
+cmd_keys() {
+  local keydir="${LDOWN_KEY_DIR:-/etc/ldown/keys}"
+  local format="text"
+  local name=""
+
+  while [[ -n "${1:-}" ]]; do
+    case "$1" in
+      --dir)    keydir="$2"; shift 2 ;;
+      --name)   name="$2";   shift 2 ;;
+      --format) format="$2"; shift 2 ;;
+      *)
+        err "unknown option: $1"
+        exit 1
+        ;;
+    esac
+  done
+
+  [[ -d "${keydir}" ]] || fatal "key directory not found: ${keydir}"
+
+  # ── single key lookup ──────────────────────────────────
+  if [[ -n "${name}" ]]; then
+    local pubfile="${keydir}/${name}.public.key"
+    local metafile="${keydir}/${name}.meta"
+    [[ -f "${pubfile}" ]] || fatal "no keypair found for '${name}'"
+    local pub
+    pub=$(cat "${pubfile}")
+    case "${format}" in
+      json)
+        printf '{"name":"%s","public_key":"%s"}\n' "${name}" "${pub}"
+        ;;
+      *)
+        divider
+        status_ok "name"       "${name}"
+        status_ok "public key" "${pub}"
+        [[ -f "${metafile}" ]] && cat "${metafile}"
+        divider
+        ;;
+    esac
+    return 0
+  fi
+
+  # ── list all ───────────────────────────────────────────
+  local found=0
+  local pub name_found metafile
+
+  for pubfile in "${keydir}/"*.public.key; do
+    [[ -f "${pubfile}" ]] || continue
+    name_found="${pubfile##*/}"
+    name_found="${name_found%.public.key}"
+    pub=$(cat "${pubfile}")
+    metafile="${keydir}/${name_found}.meta"
+
+    (( found == 0 )) && printf '\n'
+    divider
+    status_ok "name"       "${name_found}"
+    status_ok "public key" "${pub}"
+    [[ -f "${metafile}" ]] && cat "${metafile}"
+    (( ++found ))
+  done
+
+  if (( found == 0 )); then
+    warn "no keypairs found in ${keydir}"
+    return 1
+  fi
+
+  divider
+  printf '\n'
+  info "${found} keypair(s) found in ${keydir}"
+  printf '\n'
+}
+
+cmd_handshake() {
+  local name=""
+  local iface="wg0"
+  local addr=""
+  local port="51820"
+  local peer_pub=""
+  local peer_endpoint=""
+  local keepalive=""
+  local keydir="${LDOWN_KEY_DIR:-/etc/ldown/keys}"
+
+  # ── flags ──────────────────────────────────────────────
+  while [[ -n "${1:-}" ]]; do
+    case "$1" in
+      --name)          name="$2";          shift 2 ;;
+      --iface)         iface="$2";         shift 2 ;;
+      --addr)          addr="$2";          shift 2 ;;
+      --port)          port="$2";          shift 2 ;;
+      --peer-pub)      peer_pub="$2";      shift 2 ;;
+      --peer-endpoint) peer_endpoint="$2"; shift 2 ;;
+      --keepalive)     keepalive="$2";     shift 2 ;;
+      *)
+        err "unknown option: $1"
+        printf 'usage: ldown handshake [--name <keypair>] [--iface <iface>] [--addr <cidr>] [--port <port>] [--peer-pub <key>] [--peer-endpoint <host:port>] [--keepalive <seconds>]\n'
+        exit 1
+        ;;
+    esac
+  done
+
+  # ── interactive fallback ───────────────────────────────
+
+  # keypair
+  if [[ -z "${name}" ]]; then
+    printf '\n'
+    info "available keypairs:"
+    local i=1
+    local names=()
+    for f in "${keydir}/"*.public.key; do
+      [[ -f "$f" ]] || continue
+      local n="${f##*/}"; n="${n%.public.key}"
+      printf '  [%d] %s\n' "$i" "$n"
+      names+=("$n")
+      (( i++ ))
+    done
+    [[ "${#names[@]}" -eq 0 ]] && fatal "no keypairs found in ${keydir} — run: ldown keygen --name <name>"
+    printf '  select keypair: '
+    read -r sel
+    name="${names[$(( sel - 1 ))]}"
+  fi
+
+  local privfile="${keydir}/${name}.private.key"
+  local pubfile="${keydir}/${name}.public.key"
+  [[ -f "${privfile}" ]] || fatal "keypair '${name}' not found in ${keydir}"
+  local privkey pub
+  privkey=$(cat "${privfile}")
+  pub=$(cat "${pubfile}")
+
+  # interface
+  if [[ -z "${addr}" ]]; then
+    printf '  tunnel address for this machine (e.g. 10.10.0.1/24): '
+    read -r addr
+  fi
+
+  # port
+  if [[ "${port}" == "51820" ]]; then
+    printf '  listen port [51820]: '
+    read -r input_port
+    [[ -n "${input_port}" ]] && port="${input_port}"
+  fi
+
+  # peer pubkey
+  if [[ -z "${peer_pub}" ]]; then
+    printf '  peer public key: '
+    read -r peer_pub
+  fi
+
+  # peer endpoint
+  if [[ -z "${peer_endpoint}" ]]; then
+    printf '  peer endpoint (host:port): '
+    read -r peer_endpoint
+  fi
+
+  # keepalive — optional
+  if [[ -z "${keepalive}" ]]; then
+    printf '  keepalive seconds (leave blank to skip): '
+    read -r keepalive
+  fi
+
+  # ── validate ───────────────────────────────────────────
+  printf '\n'
+  step "validating inputs"
+
+  is_valid_cidr    "${addr}"     || fatal "invalid tunnel address: ${addr}"
+  is_valid_wg_key  "${peer_pub}" || fatal "invalid peer public key"
+  [[ "${peer_endpoint}" =~ :[0-9]+$ ]] \
+    || fatal "peer endpoint must include port (e.g. 192.168.99.1:51820)"
+  [[ "${port}" =~ ^[0-9]+$ ]] \
+    || fatal "invalid port: ${port}"
+
+  status_ok "keypair"       "${name}"
+  status_ok "this address"  "${addr}"
+  status_ok "listen port"   "${port}"
+  status_ok "peer endpoint" "${peer_endpoint}"
+  status_ok "public key"    "${pub}"
+
+  # ── write configs ──────────────────────────────────────
+  local confdir="/etc/ldown/${iface}"
+  step "writing configs → ${confdir}"
+
+  must "create config directory" sudo mkdir -p "${confdir}/peers"
+
+  wg_write_interface \
+    "${confdir}/interface.conf" \
+    "${addr}" "${port}" "${privkey}"
+
+  wg_write_peer \
+    "${confdir}/peers/peer.conf" \
+    "${peer_pub}" \
+    "$(cidr_network "${addr}"| sed 's/\.[0-9]*\//.0\//')" \
+    "${peer_endpoint}" \
+    "${keepalive}"
+
+  wg_assemble_config "${confdir}" "${iface}"
+
+  # ── bring up ───────────────────────────────────────────
+  step "bringing up ${iface}"
+  wg_sync "${iface}" "${confdir}/${iface}.conf"
+
+  # ── diagnostics ────────────────────────────────────────
+  step "running diagnostics"
+
+  if check_interface "${iface}"; then
+    status_ok "interface ${iface}" "up"
+  else
+    status_fail "interface ${iface}" "not found"
+    fatal "interface failed to come up"
+  fi
+
+  if check_wireguard_running "${iface}"; then
+    status_ok "wireguard" "running"
+  else
+    status_fail "wireguard" "not running"
+    fatal "wireguard failed to start"
+  fi
+
+  if check_peer_configured "${iface}"; then
+    status_ok "peer" "configured"
+  else
+    status_fail "peer" "not found"
+    fatal "peer not configured correctly"
+  fi
+
+  # ── wait for handshake ────────────────────────────────
+  step "waiting for handshake (20s)"
+  printf '\n'
+
+  local i
+  for (( i = 1; i <= 20; i++ )); do
+    if check_handshake "${iface}"; then
+      printf '\n'
+      success "handshake confirmed"
+      local age
+      age=$(wg_handshake_age "${iface}" "${peer_pub}") || true
+      [[ -n "${age}" ]] && status_ok "handshake age" "${age}s"
+      status_ok "tunnel" "${addr} ↔ ${peer_endpoint}"
+      printf '\n'
+      return 0
+    fi
+    printf '  attempt %d/20\r' "${i}"
+    sleep 1
+  done
+
+  printf '\n'
+  err "handshake timeout — no response from peer after 20s"
+  printf '\n'
+  warn "possible causes:"
+  printf '  • peer WireGuard not running\n'
+  printf '  • wrong peer public key\n'
+  printf '  • peer endpoint unreachable\n'
+  printf '  • firewall blocking UDP %s\n' "${port}"
+  printf '\n'
+  return 1
+}
+
+# ── dispatcher ─────────────────────────────────────────────
+
+main() {
+  banner
+  case "${1:-}" in
+    keygen) shift; cmd_keygen "$@" ;;
+    keys)   shift; cmd_keys   "$@" ;;
+    handshake) shift; cmd_handshake "$@" ;;
+    *)
+      printf 'usage: ldown <command> [options]\n'
+      printf '\ncommands:\n'
+      printf '  keygen    generate or manage wireguard keypairs\n'
+      printf '  keys      display stored keypairs\n'
+      printf '  handshake   configure tunnel and verify peer connection\n'
+      exit 1
+      ;;
+  esac
+}
+
+trap - ERR
+main "$@"
+exit $?
