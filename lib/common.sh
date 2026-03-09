@@ -512,3 +512,42 @@ cidr_network() {
 
   printf '%s\n' "${net[0]}.${net[1]}.${net[2]}.${net[3]}/${prefix}"
 }
+# ── require root ───────────────────────────────────────────
+require_root() {
+  [[ "${EUID}" -eq 0 ]] || fatal "this command must be run as root"
+}
+
+# ── dependency check ───────────────────────────────────────
+# usage: check_dependency wg ncat openssl
+check_dependency() {
+  local missing=()
+  for cmd in "$@"; do
+    has_cmd "${cmd}" || missing+=("${cmd}")
+  done
+  if (( ${#missing[@]} > 0 )); then
+    fatal "missing required dependencies: ${missing[*]}"
+  fi
+}
+
+# ── atomic config write ────────────────────────────────────
+# usage: write_conf /etc/ldown/mesh.conf "$content"
+write_conf() {
+  local path="$1"
+  local content="$2"
+  local dir; dir="$(dirname "${path}")"
+  mkdir -p "${dir}" || fatal "cannot create directory: ${dir}"
+  local tmp; tmp="$(mktemp "${path}.XXXXXX")" || fatal "cannot create temp file in: ${dir}"
+  printf '%s\n' "${content}" > "${tmp}" || { rm -f "${tmp}"; fatal "write failed: ${path}"; }
+  mv "${tmp}" "${path}" || { rm -f "${tmp}"; fatal "rename failed: ${path}"; }
+  debug "wrote ${path}"
+}
+
+# ── source if exists ───────────────────────────────────────
+# usage: source_if_exists /etc/ldown/mesh.conf
+source_if_exists() {
+  local file="$1"
+  [[ -f "${file}" && -r "${file}" ]] || return 0
+  # shellcheck source=/dev/null
+  source "${file}"
+  debug "sourced ${file}"
+}

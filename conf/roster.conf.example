@@ -1,0 +1,173 @@
+# =============================================================================
+# roster.conf.example — ldown roster configuration example
+# part of ldown — deterministic self-healing WireGuard mesh orchestrator
+# =============================================================================
+#
+# copy this file to /etc/ldown/roster.conf on every node in your mesh
+# the file must be identical on every node — it is the shared source of truth
+#
+# STRUCTURE
+#   optional header   — global overrides for subnet, ports
+#   one line per node — public IP followed by optional flags
+#
+# NODE ORDERING MATTERS
+#   each node's tunnel IP is derived from its line position
+#   line 1 → SUBNET.1, line 2 → SUBNET.2, etc.
+#   use --tunnel to override the auto-assigned address
+#   never reorder lines after the mesh is live unless you also update --tunnel
+#
+# MINIMAL EXAMPLE (2 nodes, everything default)
+#   203.0.113.10 --czar
+#   203.0.113.11
+#
+# =============================================================================
+
+
+# =============================================================================
+# HEADER — optional global overrides
+# these apply to every node unless overridden per-node with --port
+# =============================================================================
+
+# tunnel subnet — nodes receive SUBNET.POSITION as their tunnel IP
+# do not include the trailing octet (not .0)
+# default: 10.10.0  →  nodes get 10.10.0.1, 10.10.0.2, 10.10.0.3, ...
+SUBNET=10.10.0
+
+# WireGuard listen port — used on all nodes
+# override per-node with --port if a specific node uses a different port
+# default: 51820
+WG_PORT=51820
+
+# ldown control plane port — used by the listener and sync modules
+# must be the same on every node, no per-node override
+# default: 51821
+LDOWN_PORT=51821
+
+
+# =============================================================================
+# NODE LINES
+# format:  <public-ip>  [--czar] [--relay] [--name <name>] [--port <port>]
+#                       [--tunnel <ip>] [--keepalive <seconds>]
+# =============================================================================
+
+# --czar
+#   designates this node as the initial czar (mesh coordinator)
+#   exactly one node must have this flag — no more, no fewer
+#   the czar accepts join requests, distributes the roster, and holds elections
+#   if the czar goes offline, the remaining nodes elect a replacement
+#   the --czar flag here only sets the initial czar — it does not lock that node
+#   in as permanent czar. any node can become czar through election.
+
+# --relay
+#   this node will accept and forward traffic on behalf of NAT-blocked peers
+#   relay nodes must have a publicly reachable IP and port (no NAT in front)
+#   NAT-blocked nodes will automatically route through a relay if direct
+#   connections fail. at most one relay hop is allowed — relay-to-relay
+#   forwarding is explicitly forbidden.
+#   you should have at least one relay if any nodes are behind NAT.
+
+# --name <name>
+#   human-readable name for this node — used in logs, status output, and keys
+#   if omitted, defaults to node-POSITION (e.g. node-3 for line 3)
+#   names must be unique across the roster
+#   valid characters: letters, numbers, hyphens
+
+# --port <port>
+#   override the WireGuard listen port for this specific node only
+#   useful when a node is behind a firewall that only allows certain ports
+#   if omitted, WG_PORT from the header (or default 51820) is used
+
+# --tunnel <ip>
+#   override the auto-assigned tunnel IP for this node
+#   by default tunnel IPs are SUBNET.POSITION — this overrides that
+#   useful when a node needs a specific tunnel IP (e.g. for existing routes)
+#   the override IP must be in the same /24 as SUBNET unless intentionally
+#   using a different address space (e.g. for site-to-site with fixed IPs)
+#   tunnel IPs must be unique — duplicates are rejected at parse time
+
+# --keepalive <seconds>
+#   sets PersistentKeepalive in the WireGuard peer config for this node
+#   required for nodes behind NAT to maintain the tunnel
+#   ldown auto-detects NAT and sets keepalive automatically — use this flag
+#   to force a specific value or to set it on non-NAT nodes that need it
+#   typical value: 25
+
+
+# =============================================================================
+# EXAMPLE ROSTER — 5 nodes across a real deployment
+# =============================================================================
+
+# nyc-vps — publicly reachable VPS in New York
+# designated as initial czar and relay
+# tunnel IP: 10.10.0.1  (position 1)
+203.0.113.10 --czar --relay --name nyc-vps
+
+# lon-vps — publicly reachable VPS in London
+# no special roles — regular mesh peer
+# tunnel IP: 10.10.0.2  (position 2)
+203.0.113.11 --name lon-vps
+
+# sgp-vps — publicly reachable VPS in Singapore
+# second relay for Asia-Pacific NAT nodes
+# tunnel IP: 10.10.0.3  (position 3)
+203.0.113.12 --name sgp-vps --relay
+
+# home-office — node behind residential NAT
+# keepalive set to maintain tunnel through NAT
+# tunnel IP: 10.10.0.4  (position 4)
+192.168.1.5 --name home-office --keepalive 25
+
+# corp-node — node on corporate network, also behind NAT
+# uses a custom tunnel IP because this network already uses 10.10.0.x
+# keepalive set; the custom --tunnel puts it at 10.99.0.1 instead
+10.0.0.5 --name corp-node --keepalive 25 --tunnel 10.99.0.1
+
+
+# =============================================================================
+# NOTES ON SPECIFIC SCENARIOS
+# =============================================================================
+
+# SCENARIO: node behind strict firewall, only port 443 is open
+#   203.0.113.99 --name strict-fw --port 443
+#   (WireGuard will listen on 443 on this node instead of WG_PORT)
+
+# SCENARIO: two offices connected via site-to-site
+#   203.0.113.50 --name office-a --tunnel 10.20.0.1
+#   203.0.113.51 --name office-b --tunnel 10.20.0.2
+#   (manually assign their tunnel IPs to match your internal addressing)
+
+# SCENARIO: pure mesh with no NAT, no relay needed
+#   just list all public IPs, designate one czar
+#   if all nodes have stable public IPs, relay is optional
+#   ldown will still work — it just won't attempt relay fallback
+#   you'll see a warning about missing relay, which is safe to ignore
+
+# SCENARIO: replacing the czar node
+#   change --czar from the old node to the new one
+#   distribute the updated roster to all nodes
+#   the mesh handles the transition — the old czar will be demoted
+#   if the old czar is already offline, the mesh already elected a new one
+#   updating the roster locks in the new czar in the canonical config
+
+
+# =============================================================================
+# WHAT HAPPENS IF YOU MISCONFIGURE THIS FILE
+# =============================================================================
+#
+#   no --czar          → ldown refuses to load, tells you to add one
+#   two --czar flags   → ldown refuses to load, tells you to remove one
+#   only one node      → ldown refuses to load, mesh needs at least 2
+#   duplicate public IPs → ldown refuses to load, lists the duplicate
+#   duplicate tunnel IPs → ldown refuses to load, lists the duplicate
+#   duplicate names    → ldown refuses to load, lists the duplicate
+#   bad --port value   → ldown refuses to load, shows the line number
+#   bad --keepalive    → ldown refuses to load, shows the line number
+#   --tunnel outside subnet → ldown refuses to load with explanation
+#   this machine's IP not found → ldown refuses to start, tells you to add it
+#
+# all validation happens at load time before any state is written
+# the roster is either fully valid or completely rejected — no partial loads
+
+# =============================================================================
+# end roster.conf.example
+# =============================================================================

@@ -18,8 +18,21 @@ logs/*
 !logs/.gitkeep
 conf/ldown.conf
 
+# runtime state — never commit
+/etc/ldown/
+*.private.key
+*.key
+*.enc
+*.tar.gz
+*.tar.gz.enc
+
+# locks + logs
+/var/lock/ldown*
+/var/log/ldown/
+
 # ========================
 # Configs - keep examples/defaults
 # ========================
 !conf/ldown.conf.example
 !conf/defaults.conf
+
