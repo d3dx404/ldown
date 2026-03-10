@@ -51,12 +51,12 @@ _listener_write_handler() {
 #!/usr/bin/env bash
 # auto-generated ldown handler — $(date)
 
-source "${script_dir}/../conf/defaults.conf" 2>/dev/null
-source "${script_dir}/../lib/common.sh"      2>/dev/null
-source "${script_dir}/../lib/wireguard.sh"   2>/dev/null
-source "${script_dir}/../lib/roster.sh"      2>/dev/null
-source "${mesh_conf}"                         2>/dev/null
-roster_load "${roster_conf}"                  2>/dev/null
+source "${script_dir}/../conf/defaults.conf" >/dev/null 2>&1
+source "${script_dir}/../lib/common.sh"      >/dev/null 2>&1
+source "${script_dir}/../lib/wireguard.sh"   >/dev/null 2>&1
+source "${script_dir}/../lib/roster.sh"      >/dev/null 2>&1
+source "${mesh_conf}"                         >/dev/null 2>&1
+roster_load "${roster_conf}"                  >/dev/null 2>&1
 
 LOG_LISTENER="${log_listener}"
 KEY_DIR="${key_dir}"
