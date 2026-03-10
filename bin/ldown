@@ -418,19 +418,29 @@ main() {
         *) err "unknown mesh subcommand: ${subcmd}"; exit 1 ;;
       esac
       ;;
+    listener)
+      shift
+      source "${SCRIPT_DIR}/../lib/listener.sh"
+      local subcmd="${1:-}"; shift || true
+      case "${subcmd}" in
+        start)  cmd_listener_start ;;
+        stop)   cmd_listener_stop ;;
+        status) cmd_listener_status ;;
+        *) err "unknown listener subcommand: ${subcmd}"; exit 1 ;;
+      esac ;;
     make_roster)
       shift
-      source "${SCRIPT_DIR}/../lib/mesh.sh"
+      source "${SCRIPT_DIR}/../lib/make_roster.sh"
       cmd_make_roster "$@"
       ;;
     *)
-    
       printf 'usage: ldown <command> [options]\n'
       printf '\ncommands:\n'
       printf '  keygen    generate or manage wireguard keypairs\n'
       printf '  keys      display stored keypairs\n'
       printf '  handshake   configure tunnel and verify peer connection\n'
       printf '  mesh        form and manage the wireguard mesh\n'
+      printf '  listener    manage the listener daemon\n'
       printf '  make_roster build a roster interactively\n'
       exit 1
       ;;

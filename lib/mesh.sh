@@ -231,7 +231,11 @@ cmd_mesh_start() {
   banner
   require_root
   check_dependency wg ncat
-
+  local serve_pid=""
+  trap '[[ -n "${serve_pid}" ]] && kill "${serve_pid}" 2>/dev/null || true
+        wg-quick down "${WG_INTERFACE}" 2>/dev/null || true
+        info "mesh start aborted"
+        exit 0' INT TERM
   step "verifying init"
 
   [[ -f "${MESH_CONF}" ]] || fatal "mesh.conf not found — run: ldown mesh init"
@@ -363,6 +367,9 @@ cmd_mesh_start() {
     fatal "no peers connected — check all nodes have run: ldown mesh init"
 
   success "mesh started — ${MY_NAME} is live"
+  # start persistent listener
+  source "${SCRIPT_DIR}/../lib/listener.sh"
+  cmd_listener_start
   printf '\n'
 }
 
@@ -517,6 +524,9 @@ cmd_mesh_join() {
     fatal "connected to no peers — check czar is running: ldown mesh status"
 
   success "${MY_NAME} has joined the mesh"
+  # start persistent listener
+  source "${SCRIPT_DIR}/../lib/listener.sh"
+  cmd_listener_start
   printf '\n'
 }
 
