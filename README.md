@@ -268,7 +268,12 @@ Structured logging, metrics, alerting hooks.
 
 ## License
 
-GNU General Public License v3.0 — see [LICENSE](LICENSE)
+This project is dual-licensed.
+
+- **Open Source License:** GNU General Public License v3.0 (GPLv3) — see [LICENSE](LICENSE)
+- **Commercial License:** If you wish to use this software in a closed-source, proprietary, or private environment, you must obtain a commercial license.
+
+For commercial licensing inquiries, please contact the project author.
 
 ---
 
