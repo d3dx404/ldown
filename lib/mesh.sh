@@ -25,7 +25,7 @@ source "${_MESH_DIR}/roster.sh"
 _mesh_serve_pubkey() {
   local pubfile="${KEY_DIR}/${MY_NAME}.public.key"
   [[ -f "${pubfile}" ]] || fatal "public key not found: ${pubfile}"
-  ncat -l "${MY_IP}" "${LDOWN_PORT}" --send-only -k --max-conns 10 < "${pubfile}" &
+  ncat -l "${MY_IP}" "${LDOWN_PORT}" --send-only -k --max-conns 10 -e "cat ${pubfile}" &
   echo $!
 }
 
