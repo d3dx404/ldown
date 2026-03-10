@@ -221,8 +221,8 @@ _verify_roster_signature() {
 
     # public key exists but no signature — warn and continue
     if [[ ! -f "$ROSTER_SIG_FILE" ]]; then
-        log_warn "cluster signing key exists but roster.sig is missing"
-        log_warn "roster has not been signed — proceeding without verification"
+        warn "cluster signing key exists but roster.sig is missing"
+        warn "roster has not been signed — proceeding without verification"
         return 0
     fi
 
@@ -234,7 +234,7 @@ _verify_roster_signature() {
         return 1
     fi
 
-    log_ok "roster signature verified"
+    status_ok "roster signature verified"
     return 0
 }
 
@@ -314,8 +314,8 @@ _validate_roster() {
 
     # warnings — soft failures
     if (( ${#RELAY_IPS[@]} == 0 )); then
-        log_warn "no --relay node defined"
-        log_warn "NAT traversal will not work for double-NAT scenarios"
+        warn "no --relay node defined"
+        warn "NAT traversal will not work for double-NAT scenarios"
     fi
 
     # relay behind NAT warning
@@ -323,8 +323,8 @@ _validate_roster() {
         local RELAY="${RELAY_IPS[$i]}"
         # check if relay IP looks like a private/internal address
         if [[ "$RELAY" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.) ]]; then
-            log_warn "relay node ${RELAY} appears to be behind NAT"
-            log_warn "relay nodes should have public IPs for reliable forwarding"
+            warn "relay node ${RELAY} appears to be behind NAT"
+            warn "relay nodes should have public IPs for reliable forwarding"
         fi
     done
 
@@ -509,7 +509,7 @@ roster_load() {
         return 1
     fi
 
-    log_ok "roster loaded — ${NODE_COUNT} nodes, czar ${CZAR_IP}, ${#RELAY_IPS[@]} relay(s)"
+    status_ok "roster" "loaded — ${NODE_COUNT} nodes, czar ${CZAR_IP}, ${#RELAY_IPS[@]} relay(s)"
     return 0
 }
 

@@ -133,7 +133,11 @@ cmd_mesh_init() {
   if [[ -f "${privfile}" && -f "${pubfile}" ]]; then
     status_ok "keypair exists" "${MY_NAME} — skipping (use --rotate to regenerate)"
   else
-    must "generate keypair" wg_generate_keypair_named "${MY_NAME}" "${KEY_DIR}"
+    local priv pub
+    read -r priv pub < <(wg_generate_keypair)
+    printf '%s' "${priv}" > "${KEY_DIR}/${MY_NAME}.private.key"
+    printf '%s' "${pub}"  > "${KEY_DIR}/${MY_NAME}.public.key"
+    chmod 600 "${KEY_DIR}/${MY_NAME}.private.key"
     status_ok "keypair generated" "${pubfile}"
   fi
 
@@ -1625,24 +1629,3 @@ cmd_mesh_neighbors() {
   info "relay rules: direct preferred — relay fallback — relay→relay forbidden"
   printf '\n'
 }
-```
-
-That's the last command — `mesh.sh` is complete. All 12 functions:
-```
-_mesh_serve_pubkey       internal
-_mesh_fetch_pubkey       internal
-_mesh_fetch_pubkey_retry internal
-_mesh_check_peer_handshake internal
-_mesh_sorted_peer_indices  internal
-cmd_mesh_init
-cmd_mesh_start
-cmd_mesh_join
-cmd_mesh_leave
-cmd_mesh_recover
-cmd_mesh_export
-cmd_mesh_import
-cmd_mesh_reset
-cmd_mesh_status
-cmd_mesh_doctor
-cmd_mesh_diff
-cmd_mesh_neighbors

@@ -3,6 +3,7 @@
 LDOWN_VERSION="0.1.0"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../conf/defaults.conf"
 source "${SCRIPT_DIR}/../lib/common.sh"
 source "${SCRIPT_DIR}/../lib/wireguard.sh"
 
@@ -393,7 +394,6 @@ cmd_handshake() {
 # ── dispatcher ─────────────────────────────────────────────
 
 main() {
-  banner
   case "${1:-}" in
     keygen) shift; cmd_keygen "$@" ;;
     keys)   shift; cmd_keys   "$@" ;;
