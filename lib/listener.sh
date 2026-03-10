@@ -178,7 +178,7 @@ cmd_listener_start() {
 
   [[ -f "${MESH_CONF}" ]] || fatal "mesh.conf not found — run: ldown mesh init"
   source_if_exists "${MESH_CONF}"
-  roster_load "${ROSTER_CONF}" || fatal "roster failed to load"
+  roster_load "${ROSTER_CONF}" || warn "roster warnings present — continuing"
 
   # ensure PID dir exists
   mkdir -p /run/ldown
