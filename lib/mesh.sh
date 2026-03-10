@@ -134,7 +134,8 @@ cmd_mesh_init() {
     status_ok "keypair exists" "${MY_NAME} — skipping (use --rotate to regenerate)"
   else
     local priv pub
-    read -r priv pub < <(wg_generate_keypair)
+    priv=$(wg genkey)
+    pub=$(echo "${priv}" | wg pubkey)
     printf '%s' "${priv}" > "${KEY_DIR}/${MY_NAME}.private.key"
     printf '%s' "${pub}"  > "${KEY_DIR}/${MY_NAME}.public.key"
     chmod 600 "${KEY_DIR}/${MY_NAME}.private.key"
