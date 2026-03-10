@@ -25,7 +25,7 @@ source "${_MESH_DIR}/roster.sh"
 _mesh_serve_pubkey() {
   local pubfile="${KEY_DIR}/${MY_NAME}.public.key"
   [[ -f "${pubfile}" ]] || fatal "public key not found: ${pubfile}"
-  ncat -l "${MY_IP}" "${LDOWN_PORT}" --send-only --max-conns 1 < "${pubfile}" &
+  ncat -l "${MY_IP}" "${LDOWN_PORT}" --send-only -k --max-conns 1 < "${pubfile}" &
   echo $!
 }
 
@@ -142,7 +142,7 @@ cmd_mesh_init() {
   fi
 
   local my_pubkey
-  my_pubkey="$(<"${pubfile}")"
+  my_pubkey="$(cat "${pubfile}")"
 
   # ── TLS cert ────────────────────────────────────────────
   step "TLS certificate"
@@ -260,7 +260,7 @@ cmd_mesh_start() {
   step "bringing up WireGuard interface"
 
   local privkey
-  privkey="$(<"${privfile}")"
+  privkey="$(cat "${privfile}")"
 
   wg_write_interface \
     "${WG_DIR}/interface.conf" \
@@ -397,7 +397,7 @@ cmd_mesh_join() {
   [[ -f "${pubfile}" ]]  || fatal "public key not found: ${pubfile} — re-run: ldown mesh init"
 
   local my_pubkey
-  my_pubkey="$(<"${pubfile}")"
+  my_pubkey="$(cat "${pubfile}")"
   status_ok "init verified" "${MY_NAME}"
 
   step "loading roster"
@@ -408,7 +408,7 @@ cmd_mesh_join() {
   step "bringing up WireGuard interface"
 
   local privkey
-  privkey="$(<"${privfile}")"
+  privkey="$(cat "${privfile}")"
 
   wg_write_interface \
     "${WG_DIR}/interface.conf" \
@@ -557,7 +557,7 @@ cmd_mesh_leave() {
 
   local my_pubkey=""
   local pubfile="${KEY_DIR}/${MY_NAME}.public.key"
-  [[ -f "${pubfile}" ]] && my_pubkey="$(<"${pubfile}")"
+  [[ -f "${pubfile}" ]] && my_pubkey="$(cat "${pubfile}")"
 
   if printf '%s\n' "LEAVE ${MY_NAME} ${MY_TUNNEL_IP} ${my_pubkey}" \
     | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null; then
@@ -636,7 +636,7 @@ cmd_mesh_recover() {
   [[ -f "${pubfile}" ]]  || fatal "public key not found: ${pubfile} — run: ldown mesh init"
 
   local my_pubkey
-  my_pubkey="$(<"${pubfile}")"
+  my_pubkey="$(cat "${pubfile}")"
 
   status_ok "identity"   "${MY_NAME} (${MY_IP})"
   status_ok "tunnel IP"  "${MY_TUNNEL_IP}"
@@ -655,7 +655,7 @@ cmd_mesh_recover() {
   step "bringing up WireGuard interface"
 
   local privkey
-  privkey="$(<"${privfile}")"
+  privkey="$(cat "${privfile}")"
 
   wg_write_interface \
     "${WG_DIR}/interface.conf" \
@@ -1006,7 +1006,7 @@ cmd_mesh_reset() {
       step "notifying czar"
       local my_pubkey=""
       local pubfile="${KEY_DIR}/${MY_NAME}.public.key"
-      [[ -f "${pubfile}" ]] && my_pubkey="$(<"${pubfile}")"
+      [[ -f "${pubfile}" ]] && my_pubkey="$(cat "${pubfile}")"
       printf '%s\n' "LEAVE ${MY_NAME} ${MY_TUNNEL_IP:-} ${my_pubkey}" \
         | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null || true
       status_ok "czar notified" "${CZAR_IP}"
