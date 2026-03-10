@@ -114,6 +114,16 @@ _do_join() {
     printf '%s %s %s:%s %s\n' "\${MY_NAME}" "\${MY_TUNNEL_IP}" "\${MY_IP}" "\${WG_PORT}" "\${czar_pub}"
   _peer_list
   _llog "INFO" "JOIN complete \${name}"
+  # notify all existing peers about the new node
+  local i
+  for i in "\${!PEER_NAMES[@]}"; do
+    local pname="\${PEER_NAMES[\$i]}"
+    local pip="\${PEER_IPS[\$i]}"
+    local pkeepalive="\${PEER_KEEPALIVES[\$i]:-}"
+    [[ "\${pname}" == "\${name}" ]] && continue
+    local notify_payload="PEER_ADD \${name} \${tunnel_ip} \${pip}:\${WG_PORT} \${pubkey} \${pkeepalive}"
+    printf '%s\n' "\${notify_payload}" | ncat --wait 2 "\${pip}" "\${LDOWN_PORT}" >/dev/null 2>&1 || true
+  done
 }
 
 _do_leave() {
@@ -158,6 +168,17 @@ case "\${action}" in
     ;;
   PING)
     printf 'PONG\n'
+    ;;
+  PEER_ADD)
+    read -ra p <<< "\${line}"
+    # PEER_ADD <name> <tunnel_ip> <endpoint> <pubkey> [keepalive]
+    pname="\${p[1]:-}" ptunnel="\${p[2]:-}" pendpoint="\${p[3]:-}"
+    ppubkey="\${p[4]:-}" pkeepalive="\${p[5]:-}"
+    is_valid_wg_key "\${ppubkey}" || { printf 'ERROR invalid pubkey\n'; exit 1; }
+    wg_args=(wg set "\${WG_INTERFACE}" peer "\${ppubkey}" allowed-ips "\${ptunnel}/32" endpoint "\${pendpoint}")
+    [[ -n "\${pkeepalive}" ]] && wg_args+=(persistent-keepalive "\${pkeepalive}")
+    "\${wg_args[@]}" 2>/dev/null && printf 'OK\n' || printf 'ERROR wg set failed\n'
+    _llog "INFO" "PEER_ADD \${pname} (\${ptunnel})"
     ;;
   *)
     _llog "WARN" "unknown action: \${action}"
