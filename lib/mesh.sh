@@ -25,7 +25,7 @@ source "${_MESH_DIR}/roster.sh"
 _mesh_serve_pubkey() {
   local pubfile="${KEY_DIR}/${MY_NAME}.public.key"
   [[ -f "${pubfile}" ]] || fatal "public key not found: ${pubfile}"
-  ncat -l "${LDOWN_PORT}" --send-only --max-conns 1 --sh-exec "cat ${pubfile}" &
+  ncat -l "${LDOWN_PORT}" --send-only -k --max-conns 1 --sh-exec "cat ${pubfile}" &
   echo $!
 }
 
@@ -255,7 +255,10 @@ cmd_mesh_start() {
 
   step "serving public key for bootstrap"
   local serve_pid
-  serve_pid="$(_mesh_serve_pubkey)"
+  _mesh_serve_pubkey &>/tmp/ldown_serve.out &
+  sleep 0.5
+  serve_pid=$(pgrep -f "ncat.*${LDOWN_PORT}" | head -1) || fatal "failed to start key server on port ${LDOWN_PORT}"
+  [[ -n "${serve_pid}" ]] || fatal "failed to start key server on port ${LDOWN_PORT}"
   status_ok "key server started" "pid ${serve_pid} on ${MY_IP}:${LDOWN_PORT}"
 
   step "bringing up WireGuard interface"
