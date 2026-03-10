@@ -36,7 +36,7 @@ _mesh_fetch_pubkey() {
   local ip="$1"
   local port="$2"
   local key
-  key="$(ncat --recv-only --wait 2 "${ip}" "${port}" 2>/dev/null)"
+    key="$(printf 'PUBKEY\n' | ncat --wait 2 "${ip}" "${port}" 2>/dev/null)"
   [[ -n "${key}" ]] || return 1
   is_valid_wg_key "${key}" || return 1
   printf '%s\n' "${key}"
