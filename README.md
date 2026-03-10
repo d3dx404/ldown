@@ -268,12 +268,19 @@ Structured logging, metrics, alerting hooks.
 
 ## License
 
-This project is dual-licensed.
+ldown is dual-licensed under the GNU Affero General Public License v3.0 (AGPLv3) and a Commercial License.
 
-- **Open Source License:** GNU General Public License v3.0 (GPLv3) — see [LICENSE](LICENSE)
-- **Commercial License:** If you wish to use this software in a closed-source, proprietary, or private environment, you must obtain a commercial license.
+### Open Source License
+This project is available under the GNU Affero General Public License v3.0.  
+See the [LICENSE](LICENSE) file for the full text.
 
-For commercial licensing inquiries, please contact the project author.
+### Commercial License
+Organizations that wish to use this software without complying with the AGPL source disclosure requirements must obtain a commercial license from the Author.
+
+### Nonprofit Consideration
+Nonprofit organizations with strong humanitarian or animal welfare missions are encouraged to apply for a no-cost commercial license.
+
+For licensing inquiries, please contact the Author.
 
 ---
 
