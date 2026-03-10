@@ -1,229 +1,268 @@
 # ldown
-WireGuard provisioning and network lockdown tool for Linux — client, gateway, and uplink.
+Deterministic self-healing WireGuard mesh orchestrator for Linux — no coordination server, pure bash.
 
 > Created 7/3/26 or for you americans 3/7/26— actively in development
 
 ---
 
-## Current State
+## What it does
 
-The core library and CLI are functional. Key generation, config writing, and tunnel handshake are working. Network hardening, firewall, and DNS layers are in progress.
-
----
-
-## Usage
-
-```bash
-sudo ./bin/ldown <command> [options]
-```
-
----
-
-## Commands
-
-### `keygen` — generate or manage WireGuard keypairs
-
-```bash
-# generate and store a keypair
-sudo ./bin/ldown keygen --name server-a
-
-# show existing keypair without regenerating
-sudo ./bin/ldown keygen --name server-a --show
-
-# export public key only (pipe-friendly)
-sudo ./bin/ldown keygen --name server-a --export
-
-# rotate keypair — backs up old keys with timestamp
-sudo ./bin/ldown keygen --name server-a --rotate
-
-# json output
-sudo ./bin/ldown keygen --name server-a --format json
-
-# with comment
-sudo ./bin/ldown keygen --name server-a --comment "NYC node"
-```
-
-Options:
-```
---name        keypair name (required)
---dir         key directory (default: /etc/ldown/keys)
---rotate      regenerate keypair, backup old with timestamp
---regen       alias for --rotate
---show        display existing keypair without regenerating
---export      print public key only to stdout
---format      text (default) | json
---comment     label stored in metadata
-```
-
----
-
-### `keys` — display stored keypairs
-
-```bash
-# list all keypairs
-sudo ./bin/ldown keys
-
-# show specific keypair
-sudo ./bin/ldown keys --name server-a
-
-# json output
-sudo ./bin/ldown keys --format json
-```
-
-Options:
-```
---name        show specific keypair only
---dir         key directory (default: /etc/ldown/keys)
---format      text (default) | json
-```
-
----
-
-### `handshake` — configure tunnel and verify peer connection
-
-```bash
-sudo ./bin/ldown handshake \
-  --name server-a \
-  --addr 10.10.0.1/24 \
-  --port 51820 \
-  --peer-pub <peer public key> \
-  --peer-endpoint 192.168.99.1:51820 \
-  --peer-allowed 10.10.0.2/32
-```
-
-All options can be omitted for interactive mode — ldown will prompt for each value.
-
-Options:
-```
---name            keypair to use (from /etc/ldown/keys)
---iface           WireGuard interface name (default: wg0)
---addr            tunnel IP for this machine (e.g. 10.10.0.1/24)
---port            listen port (default: 51820)
---peer-pub        peer's WireGuard public key
---peer-endpoint   peer's real IP and port (e.g. 192.168.99.1:51820)
---peer-allowed    peer's allowed IPs (e.g. 10.10.0.2/32)
---keepalive       PersistentKeepalive in seconds (omit for direct connections)
-```
-
-Flow:
-```
-1. validate inputs
-2. write interface config
-3. write peer config
-4. assemble wg0.conf
-5. bring up interface
-6. check interface, wireguard, peer
-7. wait up to 20s for handshake
-8. report success or failure with reason
-```
-
----
-
-## Key Storage
-
-Keys are stored in `/etc/ldown/keys/` with the following layout:
-
-```
-/etc/ldown/keys/
-  server-a.private.key      chmod 600 — never shared
-  server-a.public.key       chmod 600 — share with peers
-  server-a.meta             created timestamp and comment
-  server-a.private.key.TIMESTAMP.bak   created on --rotate
-```
-
-Private keys are never printed after initial generation.
-
----
-
-## Config Layout
-
-```
-/etc/ldown/
-  wg0/
-    interface.conf     [Interface] block
-    peers/
-      peer.conf        [Peer] block — one file per peer
-    wg0.conf           assembled from above — never hand-edited
-```
-
----
-
-## Current Structure
-
-```
-ldown/
-├── bin/
-│   └── ldown              ← entry point, subcommand dispatcher
-├── lib/
-│   ├── common.sh          ← logging, output, validation, execution helpers
-│   └── wireguard.sh       ← key gen, config writing, interface control, diagnostics
-```
-
----
-
-## Roadmap
-
-### Near term
-```
-lib/network.sh
-  → IP forwarding
-  → NAT / masquerade
-  → killswitch (drop traffic if tunnel goes down)
-  → IPv6 disable
-  → DHCP control
-  → route management
-
-lib/firewall.sh
-  → nftables ruleset generation
-  → iptables fallback
-  → per-mode rulesets (client / gateway / uplink)
-
-lib/dns.sh
-  → dnscrypt-proxy setup
-  → DNS leak prevention
-  → resolver config
-```
-
-### CLI commands
-```
-ldown status          → live tunnel state, handshake age, transfer stats
-ldown down            → tear down tunnel and restore network state
-ldown peer add        → add peer to existing tunnel without restart
-ldown peer list       → list configured peers
-ldown peer remove     → remove peer by name or pubkey
-ldown serve-key       → serve public key over local HTTP for exchange
-ldown fetch-key       → fetch peer public key from remote ldown instance
-```
-
-### Modes (future)
-```
-ldown --mode client    → road warrior client setup
-ldown --mode gateway   → LAN gateway with NAT and firewall
-ldown --mode uplink    → VPS or uplink node
-```
-
-### Other
-```
-conf/defaults.conf     → default values, overridable per deployment
-templates/             → WireGuard and nftables config templates
-log rotation           → already implemented in common.sh
-mac randomization      → macchanger integration
-dry-run mode           → already implemented in common.sh via DRY_RUN
-```
+ldown forms a full WireGuard mesh between nodes using only a shared roster file. No central server, no cloud dependency, no coordination daemon. Nodes bootstrap key exchange directly, form the mesh, and can rebuild themselves from scratch using only the roster and their private keys.
 
 ---
 
 ## Requirements
 
 - Kali / Debian-based Linux
-- `wireguard-tools`
-- `nftables` or `iptables`
 - `bash` >= 4.2
+- `wireguard-tools`
+- `ncat` (nmap's netcat)
+- `openssl`
 - Root / sudo
 
-Optional (for future features):
-- `macchanger`
-- `dnscrypt-proxy`
+---
+
+## Installation
+
+```bash
+git clone https://github.com/d3dx404/ldown
+cd ldown
+chmod +x bin/ldown
+```
+
+---
+
+## Quick Start
+
+**1. Write your roster on all nodes** — `/etc/ldown/roster.conf`:
+
+```bash
+SUBNET=10.10.0
+WG_PORT=51820
+LDOWN_PORT=51821
+
+203.0.113.10 --name nyc-vps --czar --relay
+203.0.113.11 --name lon-vps --keepalive 25
+192.168.1.5  --name home-office --keepalive 25
+```
+
+Or use the interactive wizard:
+```bash
+sudo bin/ldown make_roster
+```
+
+**2. Initialize each node** (run on every node):
+```bash
+sudo bin/ldown mesh init
+```
+
+**3. Form the mesh** (run on all nodes simultaneously):
+```bash
+sudo bin/ldown mesh start
+```
+
+---
+
+## Commands
+
+### `make_roster`
+Interactive wizard to build `/etc/ldown/roster.conf`.
+```bash
+sudo bin/ldown make_roster
+```
+
+---
+
+### `mesh init`
+Set up this node — generates WireGuard keypair, TLS cert, writes mesh.conf.
+```bash
+sudo bin/ldown mesh init
+```
+
+---
+
+### `mesh start`
+Form the full mesh. Run on all nodes at the same time after init is complete on all.
+```bash
+sudo bin/ldown mesh start
+```
+
+---
+
+### `mesh join`
+Join a live mesh via the czar. Run on a new node after init.
+```bash
+sudo bin/ldown mesh join
+```
+
+---
+
+### `mesh leave`
+Gracefully leave the mesh, notify czar, tear down interface.
+```bash
+sudo bin/ldown mesh leave
+```
+
+---
+
+### `mesh recover`
+**The killer feature.** Rebuild the mesh from zero saved state. Only requires roster.conf and private keys — no mesh.conf needed. Run after a server rebuild or full state wipe.
+```bash
+sudo bin/ldown mesh recover
+```
+
+---
+
+### `mesh export`
+Create an encrypted onboarding bundle for a new node. Contains roster, TLS cert, and bootstrap info — no private keys.
+```bash
+sudo bin/ldown mesh export [output_dir]
+```
+
+---
+
+### `mesh import`
+Unpack an export bundle on a new node. Run before init + join.
+```bash
+sudo bin/ldown mesh import <bundle.tar.gz.enc>
+```
+
+---
+
+### `mesh reset`
+Nuclear option — wipe all ldown state from this node.
+```bash
+sudo bin/ldown mesh reset
+```
+
+---
+
+### `mesh status`
+Show each peer: up/down/stale, last handshake, bytes sent/received.
+```bash
+sudo bin/ldown mesh status
+```
+
+---
+
+### `mesh doctor`
+Full health check — keys, TLS cert, interface, roster hash, handshake ages, czar reachable.
+```bash
+sudo bin/ldown mesh doctor
+```
+
+---
+
+### `mesh diff`
+Compare what the roster expects vs what WireGuard actually has configured. Detects missing and rogue peers.
+```bash
+sudo bin/ldown mesh diff
+```
+
+---
+
+### `mesh neighbors`
+Reachability table — direct/stale/unreachable with tunnel latency and handshake age.
+```bash
+sudo bin/ldown mesh neighbors
+```
+
+---
+
+## Roster Format
+
+```bash
+# global settings
+SUBNET=10.10.0       # tunnel subnet prefix
+WG_PORT=51820        # WireGuard port
+LDOWN_PORT=51821     # ldown bootstrap/listener port
+
+# nodes — one per line
+# format: <public_ip> [--name <name>] [--czar] [--relay] [--tunnel <ip>] [--keepalive <seconds>]
+
+203.0.113.10 --name nyc-vps --czar --relay
+203.0.113.11 --name lon-vps
+192.168.1.5  --name home-office --keepalive 25
+```
+
+Flags:
+```
+--name        node name (used for key filenames and display)
+--czar        this node is the mesh coordinator (exactly one required)
+--relay       this node can relay traffic for NAT-traversal
+--tunnel      override auto-assigned tunnel IP (default: SUBNET.POSITION)
+--keepalive   PersistentKeepalive in seconds (use for nodes behind NAT)
+```
+
+---
+
+## Runtime Layout
+
+```
+/etc/ldown/
+  mesh.conf           node identity and mesh state
+  roster.conf         shared roster (same on all nodes)
+  tls.cert / tls.key  node TLS certificate
+  keys/
+    <name>.private.key
+    <name>.public.key
+  wg0/
+    interface.conf    WireGuard interface block
+    wg0.conf          assembled config
+    peers/
+      peer-<tunnel_ip>.conf   one per peer
+
+/var/log/ldown/
+  ldown.log
+  listener.log
+  sync.log
+  security.log
+```
+
+---
+
+## Architecture
+
+- **No coordination server** — nodes exchange pubkeys directly on LDOWN_PORT during bootstrap
+- **Deterministic** — peers sorted by tunnel IP, same order on every node
+- **Self-healing** — `mesh recover` rebuilds topology from roster + live peers
+- **Czar election** — first alive node in roster wins, epoch prevents split-brain
+- **Relay rules** — direct preferred, relay fallback, relay→relay forbidden
+
+---
+
+## Project Structure
+
+```
+ldown/
+├── bin/
+│   └── ldown              entry point, subcommand dispatcher
+├── lib/
+│   ├── common.sh          logging, output, validation, helpers
+│   ├── wireguard.sh       key gen, config writing, interface control
+│   ├── roster.sh          roster parsing and validation
+│   ├── mesh.sh            all mesh commands
+│   └── make_roster.sh     interactive roster wizard
+├── conf/
+│   ├── defaults.conf      default values
+│   └── roster.conf.example
+```
+
+---
+
+## Roadmap
+
+### Phase 3 — listener.sh
+Persistent daemon on LDOWN_PORT handling JOIN/LEAVE from peers and replacing the bootstrap ncat server.
+
+### Phase 4 — sync.sh
+Passive peer discovery loop — nodes periodically probe for missing peers and reconnect automatically.
+
+### Phase 5 — network.sh
+IP forwarding, NAT/masquerade, killswitch, route management.
+
+### Phase 6 — observability.sh
+Structured logging, metrics, alerting hooks.
 
 ---
 
