@@ -10,7 +10,7 @@
 
 [[ -n "${_MESH_SH_LOADED:-}" ]] && return 0
 _MESH_SH_LOADED=1
-set -euo pipefail
+#set -euo pipefail
 
 _MESH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${_MESH_DIR}/roster.sh"
