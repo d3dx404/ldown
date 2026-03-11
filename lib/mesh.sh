@@ -345,13 +345,13 @@ cmd_mesh_start() {
     local peer_pubkey
     peer_pubkey="$(_mesh_fetch_pubkey_retry "${peer_ip}" "${LDOWN_PORT}")" || {
       status_fail "${peer_name}" "could not fetch public key from ${peer_ip}:${LDOWN_PORT} after 10s"
-      (( failed++ ))
+      failed=$(( failed + 1 ))
       continue
     }
 
     is_valid_wg_key "${peer_pubkey}" || {
       status_fail "${peer_name}" "invalid public key received from ${peer_ip}"
-      (( failed++ ))
+      failed=$(( failed + 1 ))
       continue
     }
 
@@ -392,7 +392,7 @@ cmd_mesh_start() {
     for (( attempt = 1; attempt <= 20; attempt++ )); do
       if _mesh_check_peer_handshake "${WG_INTERFACE}" "${peer_pubkey}"; then
         status_ok "${peer_name}" "handshake confirmed"
-        (( confirmed++ ))
+        confirmed=$(( confirmed + 1 ))
         break
       fi
       sleep 1
@@ -524,13 +524,13 @@ cmd_mesh_join() {
 
     [[ -z "${peer_pubkey}" ]] && {
       warn "malformed peer line — skipping: ${peer_line}"
-      (( failed++ ))
+      failed=$(( failed + 1 ))
       continue
     }
 
     is_valid_wg_key "${peer_pubkey}" || {
       status_fail "${peer_name}" "invalid public key in peer list"
-      (( failed++ ))
+      failed=$(( failed + 1 ))
       continue
     }
 
@@ -552,7 +552,7 @@ cmd_mesh_join() {
     must "add peer ${peer_name}" "${wg_args[@]}"
     _joined_pubkeys["${peer_name}"]="${peer_pubkey}"
     status_ok "${peer_name}" "${peer_tunnel} via ${peer_endpoint}"
-    (( confirmed++ ))
+    confirmed=$(( confirmed + 1 ))
 
   done <<< "${peer_list}"
 
@@ -661,7 +661,7 @@ cmd_mesh_leave() {
     for f in "${PEER_DIR}"/peer-*.conf; do
       [[ -f "${f}" ]] || continue
       must "remove ${f}" rm -f "${f}"
-      (( count++ ))
+      count=$(( count + 1 ))
     done
   fi
   status_ok "peer configs removed" "${count}"
@@ -764,13 +764,13 @@ cmd_mesh_recover() {
     local peer_pubkey
     peer_pubkey="$(_mesh_fetch_pubkey_retry "${peer_ip}" "${LDOWN_PORT}")" || {
       status_fail "${peer_name}" "could not fetch public key from ${peer_ip}:${LDOWN_PORT} after 10s"
-      (( failed++ ))
+      failed=$(( failed + 1 ))
       continue
     }
 
     is_valid_wg_key "${peer_pubkey}" || {
       status_fail "${peer_name}" "invalid public key received from ${peer_ip}"
-      (( failed++ ))
+      failed=$(( failed + 1 ))
       continue
     }
 
@@ -792,7 +792,7 @@ cmd_mesh_recover() {
     must "add peer ${peer_name}" "${wg_args[@]}"
     _recovered_pubkeys[$i]="${peer_pubkey}"
     status_ok "${peer_name}" "${peer_tunnel} via ${peer_ip}:${peer_port}"
-    (( recovered++ ))
+    recovered=$(( recovered + 1 ))
   done
 
   step "rebuilding mesh.conf"
