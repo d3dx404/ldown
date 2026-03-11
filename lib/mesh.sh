@@ -32,9 +32,7 @@ sign_msg() {
 _mesh_serve_pubkey() {
   local pubfile="${KEY_DIR}/${MY_NAME}.public.key"
   [[ -f "${pubfile}" ]] || fatal "public key not found: ${pubfile}"
-  local pub
-  read -r pub < "${pubfile}"
-  printf '%s\n' "${pub}" | ncat -l "${MY_IP}" "${LDOWN_PORT}" --send-only --max-conns 1 &
+  ncat -l "${MY_IP}" "${LDOWN_PORT}" --send-only --sh-exec "cat ${pubfile}" &
   echo $!
 }
 

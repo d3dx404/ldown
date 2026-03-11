@@ -175,7 +175,7 @@ _validate_flag_values() {
     # --port must be integer 1-65535
     if [[ -n "$PORT" ]]; then
         if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1 || PORT > 65535 )); then
-            log_error "line ${LINE_NUM}: --port '${PORT}' must be integer 1-65535"
+            warn "line ${LINE_NUM}: --port '${PORT}' must be integer 1-65535"
             ERRORS=$((ERRORS + 1))
         fi
     fi
@@ -183,7 +183,7 @@ _validate_flag_values() {
     # --keepalive must be positive integer
     if [[ -n "$KEEPALIVE" ]]; then
         if ! [[ "$KEEPALIVE" =~ ^[0-9]+$ ]] || (( KEEPALIVE < 1 )); then
-            log_error "line ${LINE_NUM}: --keepalive '${KEEPALIVE}' must be a positive integer"
+            warn "line ${LINE_NUM}: --keepalive '${KEEPALIVE}' must be a positive integer"
             ERRORS=$((ERRORS + 1))
         fi
     fi
@@ -191,13 +191,13 @@ _validate_flag_values() {
     # --tunnel must be valid IPv4 format and valid host address
     if [[ -n "$TUNNEL" ]]; then
         if ! [[ "$TUNNEL" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-            log_error "line ${LINE_NUM}: --tunnel '${TUNNEL}' is not valid IPv4 format"
+            warn "line ${LINE_NUM}: --tunnel '${TUNNEL}' is not valid IPv4 format"
             ERRORS=$((ERRORS + 1))
         else
             # check last octet is 1-254
             local LAST_OCTET="${TUNNEL##*.}"
             if (( LAST_OCTET < 1 || LAST_OCTET > 254 )); then
-                log_error "line ${LINE_NUM}: --tunnel '${TUNNEL}' last octet must be 1-254"
+                warn "line ${LINE_NUM}: --tunnel '${TUNNEL}' last octet must be 1-254"
                 ERRORS=$((ERRORS + 1))
             fi
             # --tunnel explicitly overrides subnet — manual IPs are not prefix-checked
@@ -222,20 +222,20 @@ _verify_roster_signature() {
 
     # public key exists but no signature — warn and continue
     if [[ ! -f "$ROSTER_SIG_FILE" ]]; then
-        log_warn "cluster signing key exists but roster.sig is missing"
-        log_warn "roster has not been signed — proceeding without verification"
+        warn "cluster signing key exists but roster.sig is missing"
+        warn "roster has not been signed — proceeding without verification"
         return 0
     fi
 
     # both exist — verify
     if ! openssl dgst -sha256 -verify "$CLUSTER_PUBKEY_FILE" \
          -signature "$ROSTER_SIG_FILE" "$ROSTER" >/dev/null 2>&1; then
-        log_error "roster signature verification FAILED"
-        log_error "roster.conf may have been tampered with"
+        warn "roster signature verification FAILED"
+        warn "roster.conf may have been tampered with"
         return 1
     fi
 
-    log_ok "roster signature verified"
+    status_ok "roster signature verified"
     return 0
 }
 
@@ -248,35 +248,35 @@ _validate_roster() {
 
     # must have found myself in roster
     if [[ -z "$MY_IP" ]]; then
-        log_error "this machine IP was not found in roster.conf"
-        log_error "add this machine to the roster before running init"
-        log_error "detected IP candidates were:"
+        warn "this machine IP was not found in roster.conf"
+        warn "add this machine to the roster before running init"
+        warn "detected IP candidates were:"
         local _ROUTE_IP _IFACE_IP _PUB_IP
         _ROUTE_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1);exit}}')
-        [[ -n "$_ROUTE_IP" ]] && log_error "  routing:   ${_ROUTE_IP}"
+        [[ -n "$_ROUTE_IP" ]] && warn "  routing:   ${_ROUTE_IP}"
         while IFS= read -r _IFACE_IP; do
-            [[ -n "$_IFACE_IP" ]] && log_error "  interface: ${_IFACE_IP}"
+            [[ -n "$_IFACE_IP" ]] && warn "  interface: ${_IFACE_IP}"
         done < <(hostname -I 2>/dev/null | tr ' ' '\n')
         _PUB_IP=$(curl -fs --max-time 5 https://api.ipify.org 2>/dev/null || curl -fs --max-time 5 ifconfig.me 2>/dev/null)
-        [[ -n "$_PUB_IP" ]] && log_error "  public:    ${_PUB_IP}"
+        [[ -n "$_PUB_IP" ]] && warn "  public:    ${_PUB_IP}"
         ERRORS=$((ERRORS + 1))
     fi
 
     # exactly one czar required
     if (( _CZAR_COUNT == 0 )); then
-        log_error "no --czar defined in roster.conf"
-        log_error "exactly one node must be designated czar"
+        warn "no --czar defined in roster.conf"
+        warn "exactly one node must be designated czar"
         ERRORS=$((ERRORS + 1))
     elif (( _CZAR_COUNT > 1 )); then
-        log_error "multiple --czar entries found (${_CZAR_COUNT})"
-        log_error "only one node may be designated czar"
+        warn "multiple --czar entries found (${_CZAR_COUNT})"
+        warn "only one node may be designated czar"
         ERRORS=$((ERRORS + 1))
     fi
 
     # need at least 2 nodes
     if (( NODE_COUNT < 2 )); then
-        log_error "roster contains only ${NODE_COUNT} node(s)"
-        log_error "a mesh requires at least 2 nodes"
+        warn "roster contains only ${NODE_COUNT} node(s)"
+        warn "a mesh requires at least 2 nodes"
         ERRORS=$((ERRORS + 1))
     fi
 
@@ -284,7 +284,7 @@ _validate_roster() {
     declare -A _SEEN_IPS
     for IP in "${_ALL_PUBLIC_IPS[@]}"; do
         if [[ -n "${_SEEN_IPS[$IP]+_}" ]]; then
-            log_error "duplicate public IP in roster: ${IP}"
+            warn "duplicate public IP in roster: ${IP}"
             ERRORS=$((ERRORS + 1))
         fi
         _SEEN_IPS[$IP]=1
@@ -295,7 +295,7 @@ _validate_roster() {
     declare -A _SEEN_TUNNELS
     for TIP in "${_ALL_TUNNEL_IPS[@]}"; do
         if [[ -n "${_SEEN_TUNNELS[$TIP]+_}" ]]; then
-            log_error "duplicate tunnel IP in roster: ${TIP}"
+            warn "duplicate tunnel IP in roster: ${TIP}"
             ERRORS=$((ERRORS + 1))
         fi
         _SEEN_TUNNELS[$TIP]=1
@@ -306,7 +306,7 @@ _validate_roster() {
     declare -A _SEEN_NAMES
     for NAME in "${_ALL_NAMES[@]}"; do
         if [[ -n "${_SEEN_NAMES[$NAME]+_}" ]]; then
-            log_error "duplicate node name in roster: ${NAME}"
+            warn "duplicate node name in roster: ${NAME}"
             ERRORS=$((ERRORS + 1))
         fi
         _SEEN_NAMES[$NAME]=1
@@ -315,8 +315,8 @@ _validate_roster() {
 
     # warnings — soft failures
     if (( ${#RELAY_IPS[@]} == 0 )); then
-        log_warn "no --relay node defined"
-        log_warn "NAT traversal will not work for double-NAT scenarios"
+        warn "no --relay node defined"
+        warn "NAT traversal will not work for double-NAT scenarios"
     fi
 
     # relay behind NAT warning
@@ -324,8 +324,8 @@ _validate_roster() {
         local RELAY="${RELAY_IPS[$i]}"
         # check if relay IP looks like a private/internal address
         if [[ "$RELAY" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.) ]]; then
-            log_warn "relay node ${RELAY} appears to be behind NAT"
-            log_warn "relay nodes should have public IPs for reliable forwarding"
+            warn "relay node ${RELAY} appears to be behind NAT"
+            warn "relay nodes should have public IPs for reliable forwarding"
         fi
     done
 
@@ -361,7 +361,7 @@ _parse_roster() {
             SUBNET="${LINE#*=}"
             # validate subnet format x.x.x
             if ! [[ "$SUBNET" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-                log_error "line ${LINE_NUM}: SUBNET '${SUBNET}' is not valid format (expected x.x.x e.g. 10.10.0)"
+                warn "line ${LINE_NUM}: SUBNET '${SUBNET}' is not valid format (expected x.x.x e.g. 10.10.0)"
                 PARSE_ERRORS=$((PARSE_ERRORS + 1))
             fi
             continue
@@ -470,12 +470,12 @@ roster_load() {
 
     # file must exist and be readable
     if [[ ! -f "$FILE" ]]; then
-        log_error "roster.conf not found: ${FILE}"
+        warn "roster.conf not found: ${FILE}"
         return 1
     fi
 
     if [[ ! -r "$FILE" ]]; then
-        log_error "roster.conf is not readable: ${FILE}"
+        warn "roster.conf is not readable: ${FILE}"
         return 1
     fi
 
@@ -496,25 +496,25 @@ roster_load() {
     local DETECT_STATUS=$?
 
     if (( DETECT_STATUS != 0 )) || [[ -z "$MY_DETECTED_IP" ]]; then
-        log_error "could not detect this machine's IP from roster"
-        log_error "checked: ip route, hostname -I, ifconfig.me"
-        log_error "none matched any entry in ${FILE}"
+        warn "could not detect this machine's IP from roster"
+        warn "checked: ip route, hostname -I, ifconfig.me"
+        warn "none matched any entry in ${FILE}"
         return 1
     fi
 
     # parse the roster
     if ! _parse_roster "$FILE" "$MY_DETECTED_IP"; then
-        log_error "roster parsing failed — fix errors above before continuing"
+        warn "roster parsing failed — fix errors above before continuing"
         return 1
     fi
 
     # validate post-parse
     if ! _validate_roster; then
-        log_error "roster validation failed — fix errors above before continuing"
+        warn "roster validation failed — fix errors above before continuing"
         return 1
     fi
 
-    log_ok "roster loaded — ${NODE_COUNT} nodes, czar ${CZAR_IP}, ${#RELAY_IPS[@]} relay(s)"
+    status_ok "roster loaded — ${NODE_COUNT} nodes, czar ${CZAR_IP}, ${#RELAY_IPS[@]} relay(s)"
     return 0
 }
 
@@ -563,7 +563,7 @@ roster_is_relay() {
 
 # print full parsed state — useful for debugging and make_roster output
 roster_dump() {
-    log_info "roster state dump"
+    info "roster state dump"
     echo ""
     echo "  ROSTER_FILE     = ${ROSTER_FILE}"
     echo "  ROSTER_HASH     = ${ROSTER_HASH}"
