@@ -299,7 +299,16 @@ cmd_mesh_start() {
 
   step "serving public key for bootstrap"
   local serve_pid
-  serve_pid="$(_mesh_serve_pubkey)"
+  local pubfile="${KEY_DIR}/${MY_NAME}.public.key"
+  ncat -l "${MY_IP}" "${LDOWN_PORT}" -k --sh-exec "cat ${pubfile}" \
+    &>/tmp/ldown_serve.out &
+  serve_pid=$!
+  sleep 0.5
+  if ! kill -0 "${serve_pid}" 2>/dev/null; then
+    warn "key server failed to start — check /tmp/ldown_serve.out"
+    cat /tmp/ldown_serve.out
+    fatal "cannot continue without bootstrap key server"
+  fi
   status_ok "key server started" "pid ${serve_pid} on ${MY_IP}:${LDOWN_PORT}"
 
   step "bringing up WireGuard interface"
