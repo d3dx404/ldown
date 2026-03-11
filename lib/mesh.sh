@@ -397,7 +397,7 @@ cmd_mesh_start() {
       fi
       sleep 1
     done
-    (( attempt > 20 )) && status_warn "${peer_name}" "no handshake after 20s"
+    [[ $attempt -gt 20 ]] && status_warn "${peer_name}" "no handshake after 20s"
   done
 
   printf '\n'
@@ -431,6 +431,8 @@ cmd_mesh_start() {
     done
   fi
 
+  source "${BASH_SOURCE[0]%/*}/listener.sh"
+  cmd_listener_start
   success "mesh started — ${MY_NAME} is live"
   printf '\n'
 }
@@ -571,7 +573,7 @@ cmd_mesh_join() {
       fi
       sleep 1
     done
-    (( attempt > 20 )) && status_warn "${peer_name}" "no handshake after 20s — may still converge"
+    [[ $attempt -gt 20 ]] && status_warn "${peer_name}" "no handshake after 20s — may still converge"
   done
 
   printf '\n'
@@ -583,6 +585,8 @@ cmd_mesh_join() {
 
   [[ "${confirmed}" -eq 0 ]] && \
     fatal "connected to no peers — check czar is running: ldown mesh status"
+  source "${BASH_SOURCE[0]%/*}/listener.sh"
+  cmd_listener_start
 
   success "${MY_NAME} has joined the mesh"
   printf '\n'
@@ -759,14 +763,14 @@ cmd_mesh_recover() {
 
     local peer_pubkey
     peer_pubkey="$(_mesh_fetch_pubkey_retry "${peer_ip}" "${LDOWN_PORT}")" || {
-      status_warn "${peer_name}" "unreachable after 10s — skipping"
-      (( unreachable++ ))
+      status_fail "${peer_name}" "could not fetch public key from ${peer_ip}:${LDOWN_PORT} after 10s"
+      (( failed++ ))
       continue
     }
 
     is_valid_wg_key "${peer_pubkey}" || {
-      status_fail "${peer_name}" "invalid key received — skipping"
-      (( unreachable++ ))
+      status_fail "${peer_name}" "invalid public key received from ${peer_ip}"
+      (( failed++ ))
       continue
     }
 
@@ -1259,7 +1263,7 @@ cmd_mesh_doctor() {
 
   if [[ ! -f "${MESH_CONF}" ]]; then
     status_fail "mesh.conf" "not found — run: ldown mesh init"
-    (( errors++ )) || true
+    errors=$((errors + 1))
     printf '\n'
     status_fail "doctor" "${errors} error(s) — cannot continue without mesh.conf"
     return 1
@@ -1269,7 +1273,7 @@ cmd_mesh_doctor() {
 
   if [[ -z "${MY_NAME:-}" ]]; then
     status_fail "mesh.conf" "missing MY_NAME — re-run: ldown mesh init"
-    (( errors++ )) || true
+    errors=$((errors + 1))
     return 1
   fi
 
@@ -1284,14 +1288,14 @@ cmd_mesh_doctor() {
 
   if [[ ! -f "${privfile}" ]]; then
     status_fail "private key" "not found: ${privfile}"
-    (( errors++ )) || true
+    errors=$((errors + 1))
   else
     status_ok "private key" "${privfile}"
   fi
 
   if [[ ! -f "${pubfile}" ]]; then
     status_fail "public key" "not found: ${pubfile}"
-    (( errors++ )) || true
+    errors=$((errors + 1))
   else
     status_ok "public key" "${pubfile}"
   fi
@@ -1301,7 +1305,7 @@ cmd_mesh_doctor() {
 
   if [[ ! -f "${TLS_CERT}" ]]; then
     status_fail "TLS cert" "not found — run: ldown mesh init"
-    (( errors++ )) || true
+    errors=$((errors + 1))
   else
     local expiry
     expiry="$(openssl x509 -in "${TLS_CERT}" -noout -enddate 2>/dev/null | cut -d= -f2)"
@@ -1311,7 +1315,7 @@ cmd_mesh_doctor() {
 
     if [[ -n "${TLS_FINGERPRINT:-}" && "${fp}" != "${TLS_FINGERPRINT}" ]]; then
       status_fail "TLS fingerprint" "mismatch — cert rotated without updating mesh.conf"
-      (( errors++ )) || true
+      errors=$((errors + 1))
     else
       status_ok "TLS fingerprint" "matches mesh.conf"
     fi
@@ -1323,7 +1327,7 @@ cmd_mesh_doctor() {
   local iface_up=false
   if ! is_valid_iface "${WG_INTERFACE}"; then
     status_fail "interface" "${WG_INTERFACE} is not up"
-    (( errors++ )) || true
+    errors=$((errors + 1))
   else
     local wg_ip
     wg_ip="$(ip -4 addr show "${WG_INTERFACE}" 2>/dev/null \
@@ -1337,13 +1341,13 @@ cmd_mesh_doctor() {
 
   if [[ ! -f "${ROSTER_CONF}" ]]; then
     status_fail "roster.conf" "not found: ${ROSTER_CONF}"
-    (( errors++ )) || true
+    errors=$((errors + 1))
     return 1
   fi
 
   roster_load "${ROSTER_CONF}" || {
     status_fail "roster.conf" "failed to parse"
-    (( errors++ )) || true
+    errors=$((errors + 1))
     return 1
   }
 
@@ -1355,7 +1359,7 @@ cmd_mesh_doctor() {
   if [[ -n "${init_hash}" && -n "${current_hash}" ]]; then
     if [[ "${current_hash}" != "${init_hash}" ]]; then
       status_warn "roster hash" "roster changed since init — re-run: ldown mesh start"
-      (( warnings++ )) || true
+      warnings=$((warnings + 1))
     else
       status_ok "roster hash" "${current_hash}"
     fi
@@ -1385,13 +1389,13 @@ cmd_mesh_doctor() {
 
     if [[ -z "${peer_pubkey}" ]]; then
       status_fail "${peer_name}" "no peer config — re-run: ldown mesh start"
-      (( errors++ )) || true
+      errors=$((errors + 1))
       continue
     fi
 
     if ! "${iface_up}"; then
       status_warn "${peer_name}" "configured but interface is down"
-      (( warnings++ )) || true
+      warnings=$((warnings + 1))
       continue
     fi
 
@@ -1401,7 +1405,7 @@ cmd_mesh_doctor() {
 
     if [[ "${hs_ts}" == "0" ]]; then
       status_warn "${peer_name}" "configured but no handshake yet"
-      (( warnings++ )) || true
+      warnings=$((warnings + 1))
     else
       local age=$(( now - hs_ts ))
       (( age < 0 )) && age=0
@@ -1414,7 +1418,7 @@ cmd_mesh_doctor() {
         else                         age_display="$(( age / 86400 ))d ago"
         fi
         status_warn "${peer_name}" "stale handshake — ${age_display}"
-        (( warnings++ )) || true
+        warnings=$((warnings + 1))
       fi
     fi
   done
@@ -1424,20 +1428,20 @@ cmd_mesh_doctor() {
 
   if [[ -z "${CZAR_IP:-}" ]]; then
     status_warn "czar" "not set in mesh.conf"
-    (( warnings++ )) || true
+    warnings=$((warnings + 1))
   else
     if ping -c1 -W2 "${CZAR_IP}" &>/dev/null; then
       status_ok "czar ping" "${CZAR_IP} reachable"
     else
       status_warn "czar ping" "${CZAR_IP} not responding"
-      (( warnings++ )) || true
+      warnings=$((warnings + 1))
     fi
 
     if echo PING | ncat --wait 2 --send-only "${CZAR_IP}" "${LDOWN_PORT}" &>/dev/null; then
       status_ok "czar port" "${LDOWN_PORT} open"
     else
       status_warn "czar port" "${LDOWN_PORT} not reachable — listener may be down"
-      (( warnings++ )) || true
+      warnings=$((warnings + 1))
     fi
   fi
 
@@ -1448,7 +1452,7 @@ cmd_mesh_doctor() {
     status_ok "listener" "running"
   else
     status_warn "listener" "not running (phase 3 — not yet implemented)"
-    (( warnings++ )) || true
+    warnings=$((warnings + 1))
   fi
 
   # ── summary ──────────────────────────────────────────────
@@ -1533,17 +1537,17 @@ cmd_mesh_diff() {
 
     if [[ -z "${peer_pubkey}" ]]; then
       printf '  %-20s %-16s %-10s\n' "${peer_name}" "${peer_tunnel}" "missing"
-      (( missing++ )) || true
+      missing=$((missing + 1))
       continue
     fi
 
     if [[ -n "${_wg_peer_tunnels["${peer_pubkey}"]:-}" ]]; then
       printf '  %-20s %-16s %-10s\n' "${peer_name}" "${peer_tunnel}" "ok"
       _matched_pubkeys["${peer_pubkey}"]=1
-      (( ok++ )) || true
+      ok=$((ok + 1))
     else
       printf '  %-20s %-16s %-10s\n' "${peer_name}" "${peer_tunnel}" "missing"
-      (( missing++ )) || true
+      missing=$((missing + 1))
     fi
   done
 
@@ -1553,7 +1557,7 @@ cmd_mesh_diff() {
     [[ -n "${_matched_pubkeys["${pubkey}"]:-}" ]] && continue
     local tunnel="${_wg_peer_tunnels[$pubkey]}"
     printf '  %-20s %-16s %-10s\n' "${pubkey:0:16}..." "${tunnel}" "rogue"
-    (( rogue++ )) || true
+    rogue=$((rogue + 1))
   done
 
   divider
@@ -1666,19 +1670,19 @@ cmd_mesh_neighbors() {
         if (( age < 180 )); then
           status_display="direct"
           [[ "${is_relay}" == "1" ]] && status_display="via relay"
-          (( direct++ )) || true
+          direct=$((direct + 1))
         else
           status_display="stale"
-          (( stale++ )) || true
+          stale=$((stale + 1))
         fi
       else
         status_display="stale"
-        (( stale++ )) || true
+        stale=$((stale + 1))
       fi
     else
       latency_display="timeout"
       status_display="unreachable"
-      (( unreachable++ )) || true
+      unreachable=$((unreachable + 1))
     fi
 
     printf '  %-20s %-16s %-14s %-16s %-10s\n' \
