@@ -74,6 +74,7 @@ _roster_reset() {
     # cluster state
     NODE_COUNT=0
     ROSTER_HASH=""
+    CLUSTER_TOKEN=""
 
     # internal tracking for validation
     _CZAR_COUNT=0
@@ -114,7 +115,7 @@ _detect_my_ip() {
     for IP in "${CANDIDATES[@]}"; do
         [[ -z "$IP" ]] && continue
         # check if this IP appears as first field on any non-comment non-header line
-        if grep -vE '^\s*(#|$|SUBNET=|WG_PORT=|LDOWN_PORT=)' "$FILE" \
+        if grep -vE '^\s*(#|$|SUBNET=|WG_PORT=|LDOWN_PORT=|CLUSTER_TOKEN=)' "$FILE" \
            | awk '{print $1}' \
            | grep -qx "$IP"; then
             echo "$IP"
@@ -221,8 +222,8 @@ _verify_roster_signature() {
 
     # public key exists but no signature — warn and continue
     if [[ ! -f "$ROSTER_SIG_FILE" ]]; then
-        warn "cluster signing key exists but roster.sig is missing"
-        warn "roster has not been signed — proceeding without verification"
+        log_warn "cluster signing key exists but roster.sig is missing"
+        log_warn "roster has not been signed — proceeding without verification"
         return 0
     fi
 
@@ -234,7 +235,7 @@ _verify_roster_signature() {
         return 1
     fi
 
-    status_ok "roster signature verified"
+    log_ok "roster signature verified"
     return 0
 }
 
@@ -314,8 +315,8 @@ _validate_roster() {
 
     # warnings — soft failures
     if (( ${#RELAY_IPS[@]} == 0 )); then
-        warn "no --relay node defined"
-        warn "NAT traversal will not work for double-NAT scenarios"
+        log_warn "no --relay node defined"
+        log_warn "NAT traversal will not work for double-NAT scenarios"
     fi
 
     # relay behind NAT warning
@@ -323,8 +324,8 @@ _validate_roster() {
         local RELAY="${RELAY_IPS[$i]}"
         # check if relay IP looks like a private/internal address
         if [[ "$RELAY" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.) ]]; then
-            warn "relay node ${RELAY} appears to be behind NAT"
-            warn "relay nodes should have public IPs for reliable forwarding"
+            log_warn "relay node ${RELAY} appears to be behind NAT"
+            log_warn "relay nodes should have public IPs for reliable forwarding"
         fi
     done
 
@@ -365,8 +366,12 @@ _parse_roster() {
             fi
             continue
         fi
-        if [[ "$LINE" =~ ^WG_PORT= ]];   then WG_PORT="${LINE#*=}";   continue; fi
-        if [[ "$LINE" =~ ^LDOWN_PORT= ]]; then LDOWN_PORT="${LINE#*=}"; continue; fi
+        if [[ "$LINE" =~ ^WG_PORT= ]];       then WG_PORT="${LINE#*=}";       continue; fi
+        if [[ "$LINE" =~ ^LDOWN_PORT= ]];   then LDOWN_PORT="${LINE#*=}";   continue; fi
+        if [[ "$LINE" =~ ^CLUSTER_TOKEN= ]]; then
+            CLUSTER_TOKEN="${LINE#*=}"
+            continue
+        fi
 
         # everything past here is a node line
         NODE_POSITION=$((NODE_POSITION + 1))
@@ -509,7 +514,7 @@ roster_load() {
         return 1
     fi
 
-    status_ok "roster" "loaded — ${NODE_COUNT} nodes, czar ${CZAR_IP}, ${#RELAY_IPS[@]} relay(s)"
+    log_ok "roster loaded — ${NODE_COUNT} nodes, czar ${CZAR_IP}, ${#RELAY_IPS[@]} relay(s)"
     return 0
 }
 
