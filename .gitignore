@@ -36,3 +36,5 @@ conf/ldown.conf
 !conf/ldown.conf.example
 !conf/defaults.conf
 
+bin/*.code-workspace
+bin/ 
