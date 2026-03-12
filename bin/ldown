@@ -420,6 +420,7 @@ main() {
       ;;
     listener)
       shift
+      source "${SCRIPT_DIR}/../lib/roster.sh"
       source "${SCRIPT_DIR}/../lib/listener.sh"
       local subcmd="${1:-}"; shift || true
       case "${subcmd}" in
