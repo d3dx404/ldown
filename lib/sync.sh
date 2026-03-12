@@ -36,8 +36,11 @@ _sync_check_listener() {
   { read -r pid < "${pidfile}"; } 2>/dev/null || true
   if [[ -z "${pid}" ]] || ! kill -0 "${pid}" 2>/dev/null; then
     _slog "WARN" "listener dead — restarting"
-    cmd_listener_start
-    _slog "INFO" "listener restarted"
+    # run in a subshell so any fatal/exit inside cmd_listener_start
+    # cannot kill the sync loop
+    ( cmd_listener_start ) 2>/dev/null \
+      && _slog "INFO" "listener restarted" \
+      || _slog "WARN" "listener restart failed — will retry next cycle"
   fi
 }
 
@@ -106,8 +109,10 @@ _sync_check_peer() {
 
   # write peer conf if missing
   if [[ ! -f "${peer_conf}" ]]; then
-    wg_write_peer "${peer_conf}" "${pubkey}" "${peer_tunnel}/32" \
-      "${peer_ip}:${peer_port}" "${peer_keepalive}"
+    # run in a subshell so fatal inside wg_write_peer cannot kill the loop
+    ( wg_write_peer "${peer_conf}" "${pubkey}" "${peer_tunnel}/32" \
+        "${peer_ip}:${peer_port}" "${peer_keepalive}" ) 2>/dev/null \
+      || _slog "WARN" "wg_write_peer failed for ${peer_name} — conf not persisted"
   fi
 
   # poke the peer to trigger handshake
@@ -193,6 +198,8 @@ cmd_sync_start() {
     return 0
   fi
 
+    set +e
+    trap - ERR EXIT
   (
     _slog "INFO" "sync loop started (interval ${SYNC_INTERVAL}s)"
 
