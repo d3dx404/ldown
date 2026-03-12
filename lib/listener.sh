@@ -48,7 +48,7 @@ _listener_write_handler() {
   local wg_port="${WG_PORT}"
   local ldown_port="${LDOWN_PORT}"
 
-  cat > "${handler_path}" << 'HANDLER_EOF'
+  cat > "${handler_path}" << HANDLER_EOF
 #!/usr/bin/env bash
 # auto-generated ldown handler — $(date)
 
