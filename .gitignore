@@ -18,6 +18,7 @@ logs/*
 !logs/.gitkeep
 conf/ldown.conf
 
+
 # runtime state — never commit
 /etc/ldown/
 *.private.key
@@ -34,7 +35,4 @@ conf/ldown.conf
 # Configs - keep examples/defaults
 # ========================
 !conf/ldown.conf.example
-!conf/defaults.conf
-
-bin/*.code-workspace
-bin/ 
+!conf/defaults.conf 

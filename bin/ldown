@@ -429,6 +429,19 @@ main() {
         status) cmd_listener_status ;;
         *) err "unknown listener subcommand: ${subcmd}"; exit 1 ;;
       esac ;;
+    sync)
+      shift
+      source "${SCRIPT_DIR}/../lib/roster.sh"
+      source "${SCRIPT_DIR}/../lib/listener.sh"
+      source "${SCRIPT_DIR}/../lib/sync.sh"
+      local subcmd="${1:-}"; shift || true
+      case "${subcmd}" in
+        start)  cmd_sync_start ;;
+        stop)   cmd_sync_stop ;;
+        status) cmd_sync_status ;;
+        *) err "unknown sync subcommand: ${subcmd}"; exit 1 ;;
+      esac ;;
+
     make_roster)
       shift
       source "${SCRIPT_DIR}/../lib/make_roster.sh"

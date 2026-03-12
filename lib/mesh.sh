@@ -43,7 +43,7 @@ _mesh_fetch_pubkey() {
   local ip="$1"
   local port="$2"
   local key
-  key="$(ncat "${ip}" "${port}" --recv-only 2>/dev/null)"
+  key="$(ncat --wait 5 "${ip}" "${port}" 2>/dev/null)"
   [[ -n "${key}" ]] || return 1
   printf '%s\n' "${key}"
 }
@@ -453,6 +453,8 @@ step "verifying handshakes"
 
   source "${BASH_SOURCE[0]%/*}/listener.sh"
   cmd_listener_start
+  source "${BASH_SOURCE[0]%/*}/sync.sh"
+  cmd_sync_start
   success "mesh started — ${MY_NAME} is live"
   printf '\n'
 }
@@ -607,6 +609,8 @@ cmd_mesh_join() {
     fatal "connected to no peers — check czar is running: ldown mesh status"
   source "${BASH_SOURCE[0]%/*}/listener.sh"
   cmd_listener_start
+  source "${BASH_SOURCE[0]%/*}/sync.sh"
+  cmd_sync_start
 
   success "${MY_NAME} has joined the mesh"
   printf '\n'
