@@ -82,7 +82,7 @@ _peer_list() {
     local pubfile="\${KEY_DIR}/\${pname}.public.key"
     [[ -f "\${pubfile}" ]] || continue
     local ppubkey
-    { read -r ppubkey < "${pubfile}"; } 2>/dev/null || continue
+    { read -r ppubkey < "\${pubfile}"; } 2>/dev/null || continue
     [[ -n "\${ppubkey}" ]] || continue
     if [[ -n "\${pkeepalive}" ]]; then
       printf '%s %s %s:%s %s %s\n' "\${pname}" "\${ptunnel}" "\${pip}" "\${pport}" "\${ppubkey}" "\${pkeepalive}"
