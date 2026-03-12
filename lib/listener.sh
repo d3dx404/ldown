@@ -238,7 +238,7 @@ fi
 
 case "\${action}" in
   PUBKEY)
-    pubfile="\${KEY_DIR}/\${MY_NAME}.public.key"
+    local pubfile="\${KEY_DIR}/\${MY_NAME}.public.key"
     if [[ -f "\${pubfile}" ]]; then
       cat "\${pubfile}"
     else

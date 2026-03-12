@@ -137,32 +137,24 @@ cmd_mesh_init() {
   local privfile="${KEY_DIR}/${MY_NAME}.private.key"
   local pubfile="${KEY_DIR}/${MY_NAME}.public.key"
 
-  if [[ -f "${privfile}" && -f "${pubfile}" ]]; then
-    # verify existing pubkey is not empty — if it is, regenerate from private key
-    local existing_pub
-    { read -r existing_pub < "${pubfile}"; } 2>/dev/null
-    if [[ -z "${existing_pub}" ]]; then
-      warn "pubkey file is empty — regenerating from private key"
-      cat "${privfile}" | wg pubkey > "${pubfile}"
-      chmod 644 "${pubfile}"
-    fi
-    status_ok "keypair exists" "${MY_NAME} — skipping (use --rotate to regenerate)"
+  if [[ -f "${privfile}" ]]; then
+    info "keypair exists — skipping (use --rotate to regenerate)"
   else
     must "generate keypair" wg_generate_keypair_named "${MY_NAME}" "${KEY_DIR}"
     # verify pubkey was written correctly
     local verify_pub
-    { read -r verify_pub < "${pubfile}"; } 2>/dev/null
+    { read -r verify_pub < "${pubfile}"; } 2>/dev/null || true
     if [[ -z "${verify_pub}" ]]; then
       warn "keypair generation produced empty pubkey — regenerating"
-      cat "${privfile}" | wg pubkey > "${pubfile}"
+      cat "${privfile}" | wg pubkey > "${pubfile}" || true
       chmod 644 "${pubfile}"
     fi
     status_ok "keypair generated" "${pubfile}"
   fi
 
   local my_pubkey
-  read -r my_pubkey < "${pubfile}"
-  [[ -n "${my_pubkey}" ]] || fatal "pubkey is empty after generation — check wireguard-tools"
+  { read -r my_pubkey < "${pubfile}"; } 2>/dev/null || true
+  [[ -n "${my_pubkey}" ]] || fatal "pubkey is empty — check wireguard-tools"
 
   # ── TLS cert ────────────────────────────────────────────
   step "TLS certificate"
@@ -295,6 +287,11 @@ cmd_mesh_start() {
 
   step "loading roster"
   roster_load "${ROSTER_CONF}" || fatal "roster failed to load — fix errors above"
+  
+  if [[ "${MY_IS_CZAR}" != "true" ]]; then
+    fatal "this node is not the czar — use: ldown mesh join"
+  fi
+  
   info "peers to connect: ${#PEER_IPS[@]}"
 
   step "serving public key for bootstrap"
@@ -500,6 +497,11 @@ cmd_mesh_join() {
 
   step "loading roster"
   roster_load "${ROSTER_CONF}" || fatal "roster failed to load — fix errors above"
+  
+  if [[ "${MY_IS_CZAR}" == "true" ]]; then
+    fatal "czar nodes use mesh start, not mesh join"
+  fi
+  
   [[ -n "${CZAR_IP:-}" ]] || fatal "no czar found in roster"
   info "czar: ${CZAR_IP} (${CZAR_TUNNEL_IP})"
 
@@ -767,6 +769,8 @@ cmd_mesh_recover() {
   status_ok "directories ready" "${CONFIG_DIR}"
 
   step "bringing up WireGuard interface"
+
+  ip link delete "${WG_INTERFACE}" 2>/dev/null || true
 
   local privkey
   read -r privkey < "${privfile}"
