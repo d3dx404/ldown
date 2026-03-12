@@ -237,10 +237,8 @@ cmd_sync_start() {
           "${PEER_PORTS[$i]:-${WG_PORT}}" \
           "${PEER_KEEPALIVES[$i]:-}"
       done
-
     done
   ) &
-
   disown $!
   printf '%s\n' "$!" > "${SYNC_PIDFILE}"
   status_ok "sync loop started" "pid $! — every ${SYNC_INTERVAL}s"

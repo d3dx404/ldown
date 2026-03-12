@@ -70,6 +70,7 @@ _roster_reset() {
     PEER_NAMES=()
     PEER_KEEPALIVES=()
     PEER_PORTS=()
+    PEER_IS_RELAY=()
 
     # cluster state
     NODE_COUNT=0
@@ -447,6 +448,7 @@ _parse_roster() {
             PEER_NAMES+=("$NODE_NAME")
             PEER_PORTS+=("${NODE_PORT:-$WG_PORT}")
             PEER_KEEPALIVES+=("$NODE_KEEPALIVE")
+            PEER_IS_RELAY+=("$NODE_IS_RELAY")
         fi
 
         NODE_COUNT=$((NODE_COUNT + 1))

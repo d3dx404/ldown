@@ -161,10 +161,11 @@ _do_join() {
 
 _do_leave() {
   local name="\$1" tunnel_ip="\$2" pubkey="\$3"
+  local skip_name="\${name}"
   _llog "INFO" "LEAVE \${name} (\${tunnel_ip})"
   local pubfile="\${KEY_DIR}/\${name}.public.key"
   if [[ -f "\${pubfile}" ]]; then
-    local stored; { read -r stored < "${pubfile}"; } 2>/dev/null
+    local stored; { read -r stored < "\${pubfile}"; } 2>/dev/null
     [[ "\${stored}" == "\${pubkey}" ]] || {
       _llog "WARN" "pubkey mismatch for \${name}"
       printf 'ERROR pubkey mismatch\n'; return 1; }

@@ -303,6 +303,7 @@ cmd_mesh_start() {
   ncat -l "${MY_IP}" "${LDOWN_PORT}" -k --sh-exec "cat ${pubfile}" \
     &>/tmp/ldown_serve.out &
   serve_pid=$!
+  trap 'kill "${serve_pid}" 2>/dev/null || true' EXIT
   sleep 0.5
   if ! kill -0 "${serve_pid}" 2>/dev/null; then
     warn "key server failed to start — check /tmp/ldown_serve.out"
@@ -660,11 +661,17 @@ cmd_mesh_leave() {
   [[ -f "${pubfile}" ]] && read -r my_pubkey < "${pubfile}"
 
   local _leave_payload="LEAVE ${MY_NAME} ${MY_TUNNEL_IP} ${my_pubkey}"
-  if printf '%s\n' "$(sign_msg "${_leave_payload}") ${_leave_payload}" \
-    | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null; then
-    status_ok "czar notified" "${CZAR_IP}"
-  else
+  local response
+  response="$(printf '%s\n' "$(sign_msg "${_leave_payload}") ${_leave_payload}" | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)"
+  local rc=$?
+  
+  if [[ ${rc} -ne 0 ]]; then
     warn "could not reach czar at ${CZAR_IP}:${LDOWN_PORT} — continuing anyway"
+  elif [[ "${response}" == *"OK"* ]]; then
+    status_ok "czar notified" "${CZAR_IP}"
+  elif [[ "${response}" == *"ERROR"* || -z "${response}" ]]; then
+    warn "czar rejected LEAVE: ${response}"
+    return 1
   fi
 
   step "tearing down WireGuard interface"
@@ -771,7 +778,7 @@ cmd_mesh_recover() {
   step "probing peers"
 
   local recovered=0
-  local unreachable=0
+  local failed=0
   declare -A _recovered_pubkeys
 
   local i
@@ -855,8 +862,8 @@ INIT_TIME=${ts}"
   printf '\n'
   divider
   status_ok "peers recovered"   "${recovered}/${#PEER_IPS[@]}"
-  [[ "${unreachable}" -gt 0 ]] && \
-    status_warn "peers unreachable" "${unreachable} — will reconnect when they come online"
+  [[ "${failed}" -gt 0 ]] && \
+    status_warn "peers failed" "${failed} — check connectivity and public key validity"
   divider
   printf '\n'
 
@@ -1157,7 +1164,10 @@ cmd_mesh_status() {
   require_root
   check_dependency wg awk
 
-  [[ -f "${MESH_CONF}" ]] || fatal "mesh.conf not found — run: ldown mesh init"
+  if [[ ! -f "${MESH_CONF}" ]]; then
+    printf 'This node is not part of a mesh. Run: ldown mesh init\n'
+    exit 0
+  fi
   source_if_exists "${MESH_CONF}"
   [[ -n "${MY_NAME:-}" ]] || fatal "mesh.conf missing MY_NAME"
 
