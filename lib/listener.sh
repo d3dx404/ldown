@@ -72,9 +72,11 @@ _llog() {
 }
 
 _peer_list() {
+  local skip_name="\${1:-}"
   local i
   for i in "\${!PEER_NAMES[@]}"; do
     local pname="\${PEER_NAMES[\$i]}"
+    [[ "\${pname}" == "\${skip_name}" ]] && continue
     local ptunnel="\${PEER_TUNNEL_IPS[\$i]}"
     local pip="\${PEER_IPS[\$i]}"
     local pport="\${PEER_PORTS[\$i]:-\${WG_PORT}}"
@@ -125,10 +127,10 @@ _do_join() {
   ping -c1 -W1 "\${tunnel_ip}" &>/dev/null || true
 
   local czar_pub
-  { read -r czar_pub < "${KEY_DIR}/${MY_NAME}.public.key"; } 2>/dev/null
+  { read -r czar_pub < "\${KEY_DIR}/\${MY_NAME}.public.key"; } 2>/dev/null
   [[ -n "\${czar_pub}" ]] && \
     printf '%s %s %s:%s %s\n' "\${MY_NAME}" "\${MY_TUNNEL_IP}" "\${MY_IP}" "\${WG_PORT}" "\${czar_pub}"
-  _peer_list
+  _peer_list "${name}"
   _llog "INFO" "JOIN complete \${name}"
 
   # notify all existing peers about the new node
@@ -136,6 +138,7 @@ _do_join() {
   local i
   for i in "\${!PEER_NAMES[@]}"; do
     local pname="\${PEER_NAMES[\$i]}"
+    [[ "\${pname}" == "\${skip_name}" ]] && continue
     local pip="\${PEER_IPS[\$i]}"
     local pkeepalive="\${PEER_KEEPALIVES[\$i]:-}"
     [[ "\${pname}" == "\${MY_NAME}" ]] && continue
@@ -177,6 +180,7 @@ _do_leave() {
   local i
   for i in "\${!PEER_NAMES[@]}"; do
     local pname="\${PEER_NAMES[\$i]}"
+    [[ "\${pname}" == "\${skip_name}" ]] && continue
     local pip="\${PEER_IPS[\$i]}"
     [[ "\${pname}" == "\${MY_NAME}" ]] && continue
     [[ "\${pname}" == "\${name}" ]] && continue

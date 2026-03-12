@@ -382,23 +382,43 @@ cmd_mesh_start() {
   wg_assemble_config "${WG_DIR}" "${WG_INTERFACE}"
   status_ok "config written" "${WG_DIR}/${WG_INTERFACE}.conf"
 
-  step "verifying handshakes"
-
+step "verifying handshakes"
   local confirmed=0
+  local pids=()
+  local tmpdir
+  tmpdir=$(mktemp -d)
+
   for i in "${!_connected_pubkeys[@]}"; do
     local peer_name="${PEER_NAMES[$i]}"
     local peer_pubkey="${_connected_pubkeys[$i]}"
-    local attempt
-    for (( attempt = 1; attempt <= 20; attempt++ )); do
-      if _mesh_check_peer_handshake "${WG_INTERFACE}" "${peer_pubkey}"; then
-        status_ok "${peer_name}" "handshake confirmed"
-        confirmed=$(( confirmed + 1 ))
-        break
-      fi
-      sleep 1
-    done
-    [[ $attempt -gt 20 ]] && status_warn "${peer_name}" "no handshake after 20s"
+    (
+      for (( attempt = 1; attempt <= 20; attempt++ )); do
+        if _mesh_check_peer_handshake "${WG_INTERFACE}" "${peer_pubkey}"; then
+          echo "ok" > "${tmpdir}/${peer_name}"
+          exit 0
+        fi
+        sleep 1
+      done
+      echo "fail" > "${tmpdir}/${peer_name}"
+    ) &
+    pids+=($!)
   done
+
+  # wait for all background checks
+  for pid in "${pids[@]}"; do
+    wait "${pid}" 2>/dev/null || true
+  done
+
+  for i in "${!_connected_pubkeys[@]}"; do
+    local peer_name="${PEER_NAMES[$i]}"
+    if [[ "$(cat "${tmpdir}/${peer_name}" 2>/dev/null)" == "ok" ]]; then
+      status_ok "${peer_name}" "handshake confirmed"
+      confirmed=$(( confirmed + 1 ))
+    else
+      status_warn "${peer_name}" "no handshake after 20s"
+    fi
+  done
+  rm -rf "${tmpdir}"
 
   printf '\n'
   divider
