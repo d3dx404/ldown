@@ -48,7 +48,7 @@ _listener_write_handler() {
   local wg_port="${WG_PORT}"
   local ldown_port="${LDOWN_PORT}"
 
-  cat > "${handler_path}" << HANDLER_EOF
+  cat > "${handler_path}" << 'HANDLER_EOF'
 #!/usr/bin/env bash
 # auto-generated ldown handler — $(date)
 
@@ -144,7 +144,7 @@ _do_join() {
     [[ "\${pname}" == "\${MY_NAME}" ]] && continue
     [[ "\${pname}" == "\${name}" ]] && continue
     local ppub
-    { read -r ppub < "${KEY_DIR}/${pname}.public.key"; } 2>/dev/null
+    { read -r ppub < "\${KEY_DIR}/\${pname}.public.key"; } 2>/dev/null
     [[ -z "\${ppub}" ]] && continue
     local payload="PEER_ADD \${name} \${tunnel_ip} \${public_ip}:\${WG_PORT} \${pubkey} \${pkeepalive}"
     local notify="\$(sign_msg "\${payload}") \${payload}"

@@ -207,9 +207,9 @@ CZAR_TUNNEL_IP=${CZAR_TUNNEL_IP}
 WG_PORT=${WG_PORT}
 LDOWN_PORT=${LDOWN_PORT}
 SUBNET=${SUBNET}
-TLS_FINGERPRINT=${tls_fingerprint}
-WG_PUBKEY=${my_pubkey}
-INIT_TIME=${ts}"
+TLS_FINGERPRINT=\"${tls_fingerprint}\"
+WG_PUBKEY=\"${my_pubkey}\"
+INIT_TIME=\"${ts}\""
 
   must "secure mesh.conf" chmod 600 "${MESH_CONF}"
   status_ok "mesh.conf written" "${MESH_CONF}"
@@ -849,9 +849,9 @@ CZAR_TUNNEL_IP=${CZAR_TUNNEL_IP}
 WG_PORT=${WG_PORT}
 LDOWN_PORT=${LDOWN_PORT}
 SUBNET=${SUBNET}
-TLS_FINGERPRINT=${tls_fingerprint}
-WG_PUBKEY=${my_pubkey}
-INIT_TIME=${ts}"
+TLS_FINGERPRINT=\"${tls_fingerprint}\"
+WG_PUBKEY=\"${my_pubkey}\"
+INIT_TIME=\"${ts}\""
 
   must "secure mesh.conf" chmod 600 "${MESH_CONF}"
   status_ok "mesh.conf rebuilt" "${MESH_CONF}"
