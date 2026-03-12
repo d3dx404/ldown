@@ -239,7 +239,11 @@ fi
 case "\${action}" in
   PUBKEY)
     pubfile="\${KEY_DIR}/\${MY_NAME}.public.key"
-    [[ -f "\${pubfile}" ]] && cat "\${pubfile}" || printf 'ERROR pubkey not found\n'
+    if [[ -f "\${pubfile}" ]]; then
+      cat "\${pubfile}"
+    else
+      printf 'ERROR pubkey not found\n'
+    fi
     ;;
   JOIN)
     [[ "\${MY_IS_CZAR}" == "true" ]] || { printf 'ERROR not czar\n'; exit 1; }

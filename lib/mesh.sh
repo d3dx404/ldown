@@ -545,6 +545,7 @@ cmd_mesh_join() {
     read -r peer_name peer_tunnel peer_endpoint peer_pubkey peer_keepalive \
       <<< "${peer_line}"
 
+    [[ "${peer_name}" == "${MY_NAME}" ]] && continue
     [[ -z "${peer_pubkey}" ]] && {
       warn "malformed peer line — skipping: ${peer_line}"
       failed=$(( failed + 1 ))
@@ -587,6 +588,7 @@ cmd_mesh_join() {
 
   local peer_name peer_pubkey
   for peer_name in "${!_joined_pubkeys[@]}"; do
+    [[ "${peer_name}" == "${MY_NAME}" ]] && continue
     peer_pubkey="${_joined_pubkeys[$peer_name]}"
     local attempt
     for (( attempt = 1; attempt <= 20; attempt++ )); do
@@ -662,27 +664,27 @@ cmd_mesh_leave() {
 
   local _leave_payload="LEAVE ${MY_NAME} ${MY_TUNNEL_IP} ${my_pubkey}"
   local response
-  response="$(printf '%s\n' "$(sign_msg "${_leave_payload}") ${_leave_payload}" | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)"
-  local rc=$?
+  response="$(printf '%s\n' "$(sign_msg "${_leave_payload}") ${_leave_payload}" | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)" || true
   
-  if [[ ${rc} -ne 0 ]]; then
-    warn "could not reach czar at ${CZAR_IP}:${LDOWN_PORT} — continuing anyway"
-  elif [[ "${response}" == *"OK"* ]]; then
+  if [[ "${response}" == *"OK"* ]]; then
     status_ok "czar notified" "${CZAR_IP}"
-  elif [[ "${response}" == *"ERROR"* || -z "${response}" ]]; then
-    warn "czar rejected LEAVE: ${response}"
-    return 1
+  elif [[ -n "${response}" ]]; then
+    warn "czar response: ${response}"
+  else
+    warn "czar did not respond — continuing with local cleanup"
   fi
+
+  step "stopping daemons"
+
+  kill "$(cat /run/ldown/listener.pid 2>/dev/null)" 2>/dev/null || true
+  kill "$(cat /run/ldown/sync.pid 2>/dev/null)" 2>/dev/null || true
+  status_ok "daemons stopped" "listener and sync"
 
   step "tearing down WireGuard interface"
 
-  if is_valid_iface "${WG_INTERFACE}"; then
-    wg-quick down "${WG_INTERFACE}" 2>/dev/null || \
-      ip link delete "${WG_INTERFACE}" 2>/dev/null || true
-    status_ok "interface down" "${WG_INTERFACE}"
-  else
-    status_warn "interface" "${WG_INTERFACE} was not up — skipped"
-  fi
+  wg-quick down "${WG_INTERFACE}" 2>/dev/null || \
+    ip link delete "${WG_INTERFACE}" 2>/dev/null || true
+  status_ok "interface down" "${WG_INTERFACE}"
 
   step "removing peer configs"
 
@@ -691,20 +693,24 @@ cmd_mesh_leave() {
     local f
     for f in "${PEER_DIR}"/peer-*.conf; do
       [[ -f "${f}" ]] || continue
-      must "remove ${f}" rm -f "${f}"
+      rm -f "${f}"
       count=$(( count + 1 ))
     done
   fi
   status_ok "peer configs removed" "${count}"
 
   if [[ -f "${WG_DIR}/${WG_INTERFACE}.conf" ]]; then
-    must "remove wg config" rm -f "${WG_DIR}/${WG_INTERFACE}.conf"
+    rm -f "${WG_DIR}/${WG_INTERFACE}.conf"
     status_ok "wg config removed" "${WG_DIR}/${WG_INTERFACE}.conf"
   fi
 
   step "clearing mesh state"
-  must "remove mesh.conf" rm -f "${MESH_CONF}"
+
+  rm -f "${MESH_CONF}"
   status_ok "mesh.conf removed" "${MESH_CONF}"
+
+  rm -f /run/ldown/listener.pid /run/ldown/sync.pid
+  status_ok "PID files cleaned" ""
 
   printf '\n'
   success "${MY_NAME} has left the mesh"
