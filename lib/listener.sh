@@ -337,7 +337,7 @@ cmd_listener_start() {
   (
     trap 'rm -f "${handler}"' EXIT
     while true; do
-      ncat -l "${MY_IP}" "${LDOWN_PORT}" \
+      ncat -l --keep-open "${MY_IP}" "${LDOWN_PORT}" \
         --sh-exec "bash ${handler}" \
         --idle-timeout 5 \
         2>>"${LOG_LISTENER}" || true

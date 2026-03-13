@@ -610,8 +610,11 @@ cmd_mesh_join() {
   divider
   printf '\n'
 
-  [[ "${confirmed}" -eq 0 ]] && \
-    fatal "connected to no peers — check czar is running: ldown mesh status"
+  if [[ "${confirmed}" -eq 0 ]]; then
+    warn "connected to 0 peers — czar may be only node, or timing issue"
+    warn "sync loop will attempt recovery — use: ldown mesh recover if needed"
+  fi
+  
   source "${BASH_SOURCE[0]%/*}/listener.sh"
   cmd_listener_start
   source "${BASH_SOURCE[0]%/*}/sync.sh"
@@ -771,6 +774,7 @@ cmd_mesh_recover() {
   step "bringing up WireGuard interface"
 
   ip link delete "${WG_INTERFACE}" 2>/dev/null || true
+  sleep 0.5
 
   local privkey
   read -r privkey < "${privfile}"
