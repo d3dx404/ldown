@@ -43,7 +43,7 @@ _mesh_fetch_pubkey() {
   local ip="$1"
   local port="$2"
   local key
-  key="$(ncat --wait 5 "${ip}" "${port}" 2>/dev/null)"
+  key="$(printf 'PUBKEY\n' | ncat --wait 5 "${ip}" "${port}" 2>/dev/null)"
   [[ -n "${key}" ]] || return 1
   printf '%s\n' "${key}"
 }
