@@ -777,7 +777,11 @@ cmd_mesh_recover() {
   sleep 0.5
 
   local privkey
-  read -r privkey < "${privfile}"
+  read -r privkey < "${privfile}" || true
+
+  if [[ -z "${privkey}" ]]; then
+    fatal "private key not found at ${privfile} — run: ldown mesh init"
+  fi
 
   wg_write_interface \
     "${WG_DIR}/interface.conf" \
@@ -786,7 +790,7 @@ cmd_mesh_recover() {
     "${privkey}"
 
   must "copy interface config" cp "${WG_DIR}/interface.conf" "${WG_DIR}/${WG_INTERFACE}.conf"
-  wg_sync "${WG_INTERFACE}" "${WG_DIR}/${WG_INTERFACE}.conf"
+  wg_sync "${WG_INTERFACE}" "${WG_DIR}/${WG_INTERFACE}.conf" || true
   status_ok "interface up" "${WG_INTERFACE} — ${MY_TUNNEL_IP}/24"
 
   step "probing peers"

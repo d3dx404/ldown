@@ -226,9 +226,8 @@ verify_msg() {
 
 # early-exit for bare PUBKEY without signature
 if [[ "\${line}" == "PUBKEY" ]]; then
-  local pubfile="\${KEY_DIR}/\${MY_NAME}.public.key"
-  if [[ -f "\${pubfile}" ]]; then
-    cat "\${pubfile}"
+  if [[ -f "\${KEY_DIR}/\${MY_NAME}.public.key" ]]; then
+    cat "\${KEY_DIR}/\${MY_NAME}.public.key"
   else
     printf 'ERROR pubkey not found\n'
   fi
