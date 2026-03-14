@@ -131,7 +131,7 @@ _do_join() {
   if [[ -n "\${czar_pub}" && -n "\${MY_NAME}" && -n "\${MY_TUNNEL_IP}" && -n "\${MY_IP}" ]]; then
     printf '%s %s %s:%s %s\n' "\${MY_NAME}" "\${MY_TUNNEL_IP}" "\${MY_IP}" "\${WG_PORT}" "\${czar_pub}"
   fi
-  _peer_list "${name}"
+  _peer_list "\${MY_NAME}"
   _llog "INFO" "JOIN complete \${name}"
 
   # notify all existing peers about the new node
