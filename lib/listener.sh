@@ -128,8 +128,9 @@ _do_join() {
 
   local czar_pub
   { read -r czar_pub < "\${KEY_DIR}/\${MY_NAME}.public.key"; } 2>/dev/null
-  [[ -n "\${czar_pub}" ]] && \
+  if [[ -n "\${czar_pub}" && -n "\${MY_NAME}" && -n "\${MY_TUNNEL_IP}" && -n "\${MY_IP}" ]]; then
     printf '%s %s %s:%s %s\n' "\${MY_NAME}" "\${MY_TUNNEL_IP}" "\${MY_IP}" "\${WG_PORT}" "\${czar_pub}"
+  fi
   _peer_list "${name}"
   _llog "INFO" "JOIN complete \${name}"
 
@@ -222,6 +223,24 @@ verify_msg() {
 # wire format: <sig> <ACTION> <args...>
 # sig is field 0, action is field 1, args start at field 2
 # PUBKEY and PING are exempt — they run before any token is available (bootstrap)
+
+# early-exit for bare PUBKEY without signature
+if [[ "\${line}" == "PUBKEY" ]]; then
+  local pubfile="\${KEY_DIR}/\${MY_NAME}.public.key"
+  if [[ -f "\${pubfile}" ]]; then
+    cat "\${pubfile}"
+  else
+    printf 'ERROR pubkey not found\n'
+  fi
+  exit 0
+fi
+
+# early-exit for bare PING without signature
+if [[ "\${line}" == "PING" ]]; then
+  printf 'PONG\n'
+  exit 0
+fi
+
 read -ra p <<< "\${line}"
 sig="\${p[0]:-}"
 action="\${p[1]:-}"
