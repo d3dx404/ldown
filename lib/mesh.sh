@@ -761,6 +761,11 @@ cmd_mesh_recover() {
   status_ok "tunnel IP"  "${MY_TUNNEL_IP}"
   status_ok "keys found" "${KEY_DIR}"
 
+  # ensure local listener is up before probing peers
+  if ! bin/ldown listener status &>/dev/null; then
+    bin/ldown listener start
+  fi
+
   step "recreating directories"
 
   local dirs=( "${CONFIG_DIR}" "${KEY_DIR}" "${WG_DIR}" "${PEER_DIR}" "${LOG_DIR}" )
@@ -887,6 +892,11 @@ INIT_TIME=\"${ts}\""
 
   [[ "${recovered}" -eq 0 ]] && \
     fatal "no peers responded — ensure at least one peer is online"
+
+  source "${BASH_SOURCE[0]%/*}/listener.sh"
+  cmd_listener_start
+  source "${BASH_SOURCE[0]%/*}/sync.sh"
+  cmd_sync_start
 
   success "${MY_NAME} recovered — back in the mesh"
   printf '\n'
