@@ -9,7 +9,7 @@ Deterministic self-healing WireGuard mesh orchestrator for Linux — written ent
 
 ldown forms a full WireGuard mesh between nodes using only a shared roster file. Nodes bootstrap key exchange directly, form the mesh, and can rebuild themselves from scratch using only the roster and their private keys. The czar node handles trust, membership, and coordination — but is never in the data path. All traffic flows directly peer-to-peer over encrypted WireGuard tunnels.
 
-**The design philosophy:** ldown should behave like an immune-capable organism, not a command tree. Nodes reconnect from evidence-backed trusted state, corroborate topology through known neighbors, use the czar only for trust and epoch authority, and log every decision clearly enough that a human can see exactly why the mesh acted the way it did.
+**The design philosophy:** Nodes reconnect from evidence-backed trusted state, corroborate topology through known neighbors, use the czar only for trust and epoch authority, and log every decision clearly enough that a human can see exactly why the mesh acted the way it did.
 
 ---
 
