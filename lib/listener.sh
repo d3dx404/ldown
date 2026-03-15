@@ -137,7 +137,14 @@ _do_join() {
   local czar_pub
   { read -r czar_pub < "\${KEY_DIR}/\${MY_NAME}.public.key"; } 2>/dev/null
   if [[ -n "\${czar_pub}" && -n "\${MY_NAME}" && -n "\${MY_TUNNEL_IP}" && -n "\${MY_IP}" ]]; then
-    printf '%s %s %s:%s %s\n' "\${MY_NAME}" "\${MY_TUNNEL_IP}" "\${MY_IP}" "\${WG_PORT}" "\${czar_pub}"
+    local czar_node_pub_b64=""
+    if [[ -f "\${KEY_DIR}/\${MY_NAME}-node.pub" ]]; then
+      czar_node_pub_b64="\$(openssl pkey \
+        -in "\${KEY_DIR}/\${MY_NAME}-node.pub" \
+        -pubin -outform DER 2>/dev/null | base64 -w0)"
+    fi
+    printf '%s %s %s:%s %s %s %s\n' "\${MY_NAME}" "\${MY_TUNNEL_IP}" \
+      "\${MY_IP}" "\${WG_PORT}" "\${czar_pub}" "0" "\${czar_node_pub_b64}"
   fi
   _peer_list "\${MY_NAME}"
   _llog "INFO" "JOIN complete \${name}"

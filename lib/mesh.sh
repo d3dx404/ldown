@@ -622,8 +622,8 @@ cmd_mesh_join() {
     [[ -z "${peer_line}" ]] && continue
     [[ "${peer_line}" =~ ^ERROR ]] && fatal "czar rejected join: ${peer_line}"
 
-    local peer_name peer_tunnel peer_endpoint peer_pubkey peer_keepalive
-    read -r peer_name peer_tunnel peer_endpoint peer_pubkey peer_keepalive \
+    local peer_name peer_tunnel peer_endpoint peer_pubkey peer_keepalive peer_node_pub
+    read -r peer_name peer_tunnel peer_endpoint peer_pubkey peer_keepalive peer_node_pub \
       <<< "${peer_line}"
 
     [[ "${peer_name}" == "${MY_NAME}" ]] && continue
@@ -638,6 +638,15 @@ cmd_mesh_join() {
       failed=$(( failed + 1 ))
       continue
     }
+
+    [[ "${peer_keepalive}" == "0" ]] && peer_keepalive=""
+    
+    if [[ -n "${peer_node_pub}" ]]; then
+      printf '%s' "${peer_node_pub}" | base64 -d | \
+        openssl pkey -pubin -inform DER -outform PEM \
+        -out "${KEY_DIR}/${peer_name}-node.pub" 2>/dev/null
+      chmod 644 "${KEY_DIR}/${peer_name}-node.pub"
+    fi
 
     wg_write_peer \
       "${PEER_DIR}/peer-${peer_tunnel}.conf" \
