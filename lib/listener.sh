@@ -86,10 +86,17 @@ _peer_list() {
     local ppubkey
     { read -r ppubkey < "\${pubfile}"; } 2>/dev/null || continue
     [[ -n "\${ppubkey}" ]] || continue
+    local pnode_pub_b64=""
+    if [[ -f "\${KEY_DIR}/\${pname}-node.pub" ]]; then
+      pnode_pub_b64="\$(openssl pkey \
+        -in "\${KEY_DIR}/\${pname}-node.pub" \
+        -pubin -outform DER 2>/dev/null | base64 -w0)"
+    fi
+    local node_field="\${pnode_pub_b64}"
     if [[ -n "\${pkeepalive}" ]]; then
-      printf '%s %s %s:%s %s %s\n' "\${pname}" "\${ptunnel}" "\${pip}" "\${pport}" "\${ppubkey}" "\${pkeepalive}"
+      printf '%s %s %s:%s %s %s %s\n' "\${pname}" "\${ptunnel}" "\${pip}" "\${pport}" "\${ppubkey}" "\${pkeepalive}" "\${node_field}"
     else
-      printf '%s %s %s:%s %s\n' "\${pname}" "\${ptunnel}" "\${pip}" "\${pport}" "\${ppubkey}"
+      printf '%s %s %s:%s %s %s %s\n' "\${pname}" "\${ptunnel}" "\${pip}" "\${pport}" "\${ppubkey}" "0" "\${node_field}"
     fi
   done
 }

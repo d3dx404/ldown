@@ -626,8 +626,6 @@ cmd_mesh_join() {
     read -r peer_name peer_tunnel peer_endpoint peer_pubkey peer_keepalive peer_node_pub \
       <<< "${peer_line}"
 
-    warn "DEBUG name=[${peer_name}] pubkey=[${peer_pubkey}] keepalive=[${peer_keepalive}] node=[${peer_node_pub:0:20}]"
-
     [[ "${peer_name}" == "${MY_NAME}" ]] && continue
     [[ -z "${peer_pubkey}" ]] && {
       warn "malformed peer line — skipping: ${peer_line}"
