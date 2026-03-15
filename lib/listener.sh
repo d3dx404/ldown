@@ -58,7 +58,6 @@ source "${script_dir}/../lib/wireguard.sh"   2>/dev/null
 source "${script_dir}/../lib/roster.sh"      2>/dev/null
 source "${mesh_conf}"                         2>/dev/null
 roster_load "${roster_conf}" >/dev/null 2>&1
-_llog "DEBUG" "PEER_NAMES after roster_load: \${#PEER_NAMES[@]} — \${PEER_NAMES[*]}"
 
 LOG_LISTENER="${log_listener}"
 KEY_DIR="${key_dir}"
