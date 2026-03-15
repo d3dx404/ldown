@@ -389,6 +389,7 @@ cmd_mesh_start() {
   export LDOWN_QUIET=false
   success "mesh started — ${MY_NAME} is live"
   printf '\n'
+  [[ "${OPT_WATCH:-false}" == "true" ]] && cmd_mesh_watch
 }
 
 # =============================================================================
@@ -570,6 +571,7 @@ cmd_mesh_join() {
 
   success "${MY_NAME} has joined the mesh"
   printf '\n'
+  [[ "${OPT_WATCH:-false}" == "true" ]] && cmd_mesh_watch
 }
 
 # =============================================================================
@@ -1161,6 +1163,471 @@ cmd_mesh_reset() {
 }
 
 # =============================================================================
+# cmd_mesh_watch
+# =============================================================================
+# live-updating full-screen terminal dashboard — refreshes every second
+# shows peers, system status, recent events, sync mode
+# =============================================================================
+
+cmd_mesh_watch() {
+  require_root
+  check_dependency wg
+
+  if [[ ! -f "${MESH_CONF}" ]]; then
+    fatal "mesh.conf not found — run: ldown mesh init"
+  fi
+  source_if_exists "${MESH_CONF}"
+  [[ -n "${MY_NAME:-}" ]] || fatal "mesh.conf missing MY_NAME"
+  roster_load "${ROSTER_CONF}" 2>/dev/null || true
+
+  # ── colors ───────────────────────────────────────────────
+  local PINK='\033[38;5;218m'
+  local LBLUE='\033[38;5;153m'
+  local WHITE='\033[0;97m'
+  local GREEN='\033[0;32m'
+  local YELLOW='\033[0;33m'
+  local RED='\033[0;31m'
+  local CYAN='\033[0;36m'
+  local DIM='\033[2m'
+  local BOLD='\033[1m'
+  local RESET='\033[0m'
+
+  # ── constants ────────────────────────────────────────────
+  local BOX_WIDTH=78
+  local -a SPINNER_FRAMES=('-' '/' '|' '\')
+  local spinner_idx=0
+  local watch_start_ts="${SECONDS}"
+  local iface="${WG_INTERFACE:-wg0}"
+  local sync_state_file="/run/ldown/sync.state"
+  local listener_pid_file="/run/ldown/listener.pid"
+  local sync_pid_file="/run/ldown/sync.pid"
+  local listener_log="${LOG_LISTENER:-${LOG_DIR:-/var/log/ldown}/listener.log}"
+  local sync_log="${LOG_SYNC:-${LOG_DIR:-/var/log/ldown}/sync.log}"
+  local security_log="${LOG_SECURITY:-${LOG_DIR:-/var/log/ldown}/security.log}"
+  local ping_cycle=0
+  local czar_reachable=false
+
+  # ── helper functions ─────────────────────────────────────
+  _strip_ansi() {
+    sed 's/\x1b\[[0-9;]*m//g'
+  }
+
+  _visible_len() {
+    printf '%s' "$1" | _strip_ansi | wc -m | tr -d ' '
+  }
+
+  _box_line() {
+    local content="$1"
+    local vis_len
+    vis_len=$(_visible_len "${content}")
+    local inner_width=$(( BOX_WIDTH - 4 ))
+    if (( vis_len > inner_width )); then
+      content=$(printf '%s' "${content}" | _strip_ansi | cut -c1-${inner_width})
+      vis_len=${inner_width}
+    fi
+    local pad=$(( inner_width - vis_len ))
+    printf "║  %b%-${pad}s  ║\n" "${content}" ""
+  }
+
+  _box_top()   { printf "╔%s╗\n" "$(printf '═%.0s' $(seq 1 $((BOX_WIDTH-2))))"; }
+  _box_sep()   { printf "╠%s╣\n" "$(printf '═%.0s' $(seq 1 $((BOX_WIDTH-2))))"; }
+  _box_bot()   { printf "╚%s╝\n" "$(printf '═%.0s' $(seq 1 $((BOX_WIDTH-2))))"; }
+  _box_blank() { _box_line ""; }
+
+  _fmt_bytes() {
+    local bytes="${1:-0}"
+    [[ -z "${bytes}" || "${bytes}" == "0" ]] && printf '—' && return
+    if (( bytes < 1024 )); then
+      printf '%dB' "${bytes}"
+    elif (( bytes < 1048576 )); then
+      printf '%dKB' "$(( bytes / 1024 ))"
+    elif (( bytes < 1073741824 )); then
+      printf '%dMB' "$(( bytes / 1048576 ))"
+    else
+      printf '%dGB' "$(( bytes / 1073741824 ))"
+    fi
+  }
+
+  _fmt_uptime() {
+    local secs=$1
+    if (( secs < 60 )); then
+      printf '%ds' "${secs}"
+    elif (( secs < 3600 )); then
+      printf '%dm %ds' "$(( secs/60 ))" "$(( secs%60 ))"
+    else
+      printf '%dh %02dm %02ds' "$(( secs/3600 ))" "$(( (secs%3600)/60 ))" "$(( secs%60 ))"
+    fi
+  }
+
+  _mode_color() {
+    case "$1" in
+      CALM)      printf '%s' "${GREEN}" ;;
+      ALERT)     printf '%s' "${YELLOW}" ;;
+      REPAIR)    printf '%s' "${RED}" ;;
+      PARTITION) printf '%s' "${RED}" ;;
+      *)         printf '%s' "${WHITE}" ;;
+    esac
+  }
+
+  # ── terminal setup ──────────────────────────────────────
+  printf '\033[?25l'
+
+  _watch_cleanup() {
+    printf '\033[?25h'
+    printf '\033[0m'
+    printf '\n'
+  }
+  trap _watch_cleanup EXIT INT TERM
+
+  local term_width
+  term_width=$(stty size 2>/dev/null | awk '{print $2}')
+  [[ -z "${term_width}" || "${term_width}" == "0" ]] && term_width=80
+  local narrow_mode=false
+  if (( term_width < BOX_WIDTH + 2 )); then
+    narrow_mode=true
+  fi
+
+  # ── main refresh loop ───────────────────────────────────
+  while true; do
+    # ── collect data ─────────────────────────────────────
+    local spin="${SPINNER_FRAMES[$spinner_idx]}"
+    spinner_idx=$(( (spinner_idx + 1) % 4 ))
+
+    local now_str; now_str=$(date '+%H:%M:%S')
+    local now_ts; now_ts=$(date +%s)
+    local elapsed=$(( SECONDS - watch_start_ts ))
+    local uptime_str; uptime_str=$(_fmt_uptime "${elapsed}")
+
+    local role="peer"
+    [[ "${MY_IS_CZAR:-false}" == "true" ]] && role="czar"
+
+    # sync state
+    local sync_mode="CALM"
+    local fever="false"
+    local last_cycle=""
+    if [[ -f "${sync_state_file}" ]]; then
+      sync_mode=$(grep "^MODE=" "${sync_state_file}" 2>/dev/null | cut -d= -f2)
+      fever=$(grep "^FEVER=" "${sync_state_file}" 2>/dev/null | cut -d= -f2)
+      last_cycle=$(grep "^LAST_CYCLE=" "${sync_state_file}" 2>/dev/null | cut -d= -f2)
+      [[ -z "${sync_mode}" ]] && sync_mode="CALM"
+      [[ -z "${fever}" ]] && fever="false"
+    fi
+    local mcolor; mcolor=$(_mode_color "${sync_mode}")
+
+    # last sync age
+    local last_sync_str="unknown"
+    if [[ -n "${last_cycle}" && "${last_cycle}" =~ ^[0-9]+$ ]]; then
+      local sync_age=$(( now_ts - last_cycle ))
+      last_sync_str="${sync_age}s ago"
+    elif kill -0 "$(cat "${sync_pid_file}" 2>/dev/null)" 2>/dev/null; then
+      last_sync_str="loop active"
+    fi
+
+    # czar reachability — only every 5th cycle
+    ping_cycle=$(( (ping_cycle + 1) % 5 ))
+    if (( ping_cycle == 0 )); then
+      if ping -c1 -W1 "${CZAR_TUNNEL_IP:-${CZAR_IP:-127.0.0.1}}" &>/dev/null 2>&1; then
+        czar_reachable=true
+      else
+        czar_reachable=false
+      fi
+    fi
+    local czar_str
+    if ${czar_reachable}; then
+      czar_str="${GREEN}✓ reachable${RESET}"
+    else
+      czar_str="${RED}✗ unreachable${RESET}"
+    fi
+
+    # listener status
+    local listener_pid=""
+    local listener_str="${RED}✗ stopped${RESET}"
+    if [[ -f "${listener_pid_file}" ]]; then
+      read -r listener_pid < "${listener_pid_file}" 2>/dev/null
+      if kill -0 "${listener_pid}" 2>/dev/null; then
+        listener_str="${GREEN}✓ running${RESET} pid ${listener_pid}"
+      fi
+    fi
+
+    # sync loop status
+    local sync_pid=""
+    local sync_str="${RED}✗ stopped${RESET}"
+    if [[ -f "${sync_pid_file}" ]]; then
+      read -r sync_pid < "${sync_pid_file}" 2>/dev/null
+      if kill -0 "${sync_pid}" 2>/dev/null; then
+        sync_str="${GREEN}✓ running${RESET} pid ${sync_pid}"
+      fi
+    fi
+
+    # sync interval hint
+    local sync_interval_hint="30s"
+    case "${sync_mode}" in
+      ALERT)            sync_interval_hint="15s" ;;
+      REPAIR|PARTITION) sync_interval_hint="5s" ;;
+    esac
+
+    # interface state
+    local iface_str="${RED}✗ down${RESET}"
+    local iface_up=false
+    if ip link show "${iface}" &>/dev/null 2>&1; then
+      iface_up=true
+      iface_str="${GREEN}✓ up${RESET} ${MY_TUNNEL_IP:-?}/24"
+    fi
+
+    # node signing key count
+    local key_count
+    key_count=$(find "${KEY_DIR}" -name "*-node.pub" 2>/dev/null | wc -l | tr -d ' ')
+    local key_expected=$(( ${#PEER_NAMES[@]} + 1 ))
+    local key_str="${key_count}/${key_expected} stored"
+
+    # czar pubkey status
+    local czar_key_str="${RED}✗ missing${RESET}"
+    [[ -f "${KEY_DIR}/czar-control.pub" ]] && czar_key_str="${GREEN}✓ verified${RESET}"
+
+    # wg dump — parse once
+    local wg_dump=""
+    ${iface_up} && wg_dump=$(wg show "${iface}" dump 2>/dev/null)
+
+    # total rx/tx
+    local total_rx=0 total_tx=0
+    if [[ -n "${wg_dump}" ]]; then
+      while IFS=$'\t' read -r f1 f2 f3 f4 f5 f6 f7 f8; do
+        [[ "${f1}" =~ ^[a-zA-Z0-9+/=]{43,44}$ ]] || continue
+        [[ "${f6}" =~ ^[0-9]+$ ]] && total_rx=$(( total_rx + f6 ))
+        [[ "${f7}" =~ ^[0-9]+$ ]] && total_tx=$(( total_tx + f7 ))
+      done <<< "${wg_dump}"
+    fi
+    local total_rx_str; total_rx_str=$(_fmt_bytes "${total_rx}")
+    local total_tx_str; total_tx_str=$(_fmt_bytes "${total_tx}")
+
+    # recent events
+    local log_lines=""
+    local combined_log=""
+    if [[ -f "${listener_log}" ]]; then
+      combined_log+=$(grep -v "PING\|PONG" "${listener_log}" 2>/dev/null | tail -8)
+      combined_log+=$'\n'
+    fi
+    if [[ -f "${security_log}" ]]; then
+      combined_log+=$(tail -4 "${security_log}" 2>/dev/null)
+      combined_log+=$'\n'
+    fi
+    if [[ -n "${combined_log}" ]]; then
+      log_lines=$(printf '%s' "${combined_log}" | \
+        grep -v '^[[:space:]]*$' | \
+        sort | tail -5 | \
+        sed 's/\[.*T\([0-9:]*\)\]/[\1]/')
+    fi
+
+    local healthy_count=0
+
+    # ── narrow fallback mode ─────────────────────────────
+    if ${narrow_mode}; then
+      printf '\033[H\033[2J'
+      printf "${PINK}${BOLD}ldown v${LDOWN_VERSION:-0.1.0} — MESH WATCH${RESET}  ${DIM}${now_str}${RESET}\n"
+      printf "${WHITE}node: ${PINK}${MY_NAME:-?}${RESET}  role: ${CYAN}${role}${RESET}  mode: ${mcolor}${sync_mode}${RESET}\n"
+      printf '%s\n' "---"
+      for i in $(_mesh_sorted_peer_indices); do
+        local pname="${PEER_NAMES[$i]}"
+        local ptunnel="${PEER_TUNNEL_IPS[$i]}"
+        local pip="${PEER_IPS[$i]}"
+        local peer_line_data=""
+        if [[ -n "${wg_dump}" ]]; then
+          peer_line_data=$(awk -F'\t' -v ip="${ptunnel}" '$4 ~ ip {print; exit}' <<< "${wg_dump}")
+        fi
+        local peer_hs=0
+        if [[ -n "${peer_line_data}" ]]; then
+          peer_hs=$(cut -f5 <<< "${peer_line_data}")
+          [[ ! "${peer_hs}" =~ ^[0-9]+$ ]] && peer_hs=0
+        fi
+        local st="down"
+        if ${iface_up} && [[ -n "${peer_line_data}" ]]; then
+          if [[ "${peer_hs}" != "0" ]]; then
+            local hs_age=$(( now_ts - peer_hs ))
+            if (( hs_age < 30 )); then st="up"
+            elif (( hs_age < 120 )); then st="stale"
+            fi
+          else
+            st="wait"
+          fi
+        fi
+        printf "  %-12s %-14s %s\n" "${pname}" "${ptunnel}" "${st}"
+      done
+      printf '%s\n' "---"
+      printf "listener: %s  sync: %s\n" "$(kill -0 "${listener_pid}" 2>/dev/null && echo 'ok' || echo 'down')" "$(kill -0 "${sync_pid}" 2>/dev/null && echo 'ok' || echo 'down')"
+      printf "${DIM}[q] quit  Ctrl+C to exit${RESET}\n"
+      local key=""
+      if read -r -s -n1 -t1 key 2>/dev/null; then
+        [[ "${key}" == "q" || "${key}" == "Q" ]] && break
+      fi
+      continue
+    fi
+
+    # ── clear and draw ───────────────────────────────────
+    printf '\033[H\033[2J'
+
+    # header
+    _box_top
+    _box_line "${PINK}${BOLD}ldown v${LDOWN_VERSION:-0.1.0} — MESH WATCH${RESET}  ${DIM}${now_str}${RESET}"
+    _box_blank
+    _box_line "${WHITE}node: ${PINK}${MY_NAME:-?}${RESET}  •  role: ${CYAN}${role}${RESET}  •  tunnel: ${WHITE}${MY_TUNNEL_IP:-?}${RESET}  •  watch uptime: ${WHITE}${uptime_str}${RESET}"
+    _box_line "czar: ${PINK}${CZAR_IP:-?}${RESET} (${CZAR_TUNNEL_IP:-?})  •  ${czar_str}  •  mode: ${mcolor}${sync_mode}${RESET}"
+    _box_sep
+
+    # peers table
+    _box_line "${BOLD}${WHITE}PEERS${RESET}"
+    _box_line "${DIM}$(printf '%.0s─' $(seq 1 $((BOX_WIDTH-4))))${RESET}"
+    _box_line "${DIM}$(printf '%-9s %-13s %-21s %-10s %-8s %s' \
+      'NAME' 'TUNNEL IP' 'ENDPOINT' 'STATUS' 'H/SHAKE' 'RX / TX')${RESET}"
+
+    for i in $(_mesh_sorted_peer_indices); do
+      local pname="${PEER_NAMES[$i]}"
+      local ptunnel="${PEER_TUNNEL_IPS[$i]}"
+      local pip="${PEER_IPS[$i]}"
+      local pport="${PEER_PORTS[$i]:-${WG_PORT:-51820}}"
+
+      local peer_line_data=""
+      if [[ -n "${wg_dump}" ]]; then
+        peer_line_data=$(awk -F'\t' -v ip="${ptunnel}" '$4 ~ ip {print; exit}' <<< "${wg_dump}")
+      fi
+
+      local peer_ep="" peer_hs=0 peer_rx=0 peer_tx=0
+      if [[ -n "${peer_line_data}" ]]; then
+        peer_ep=$(cut -f3 <<< "${peer_line_data}")
+        peer_hs=$(cut -f5 <<< "${peer_line_data}")
+        peer_rx=$(cut -f6 <<< "${peer_line_data}")
+        peer_tx=$(cut -f7 <<< "${peer_line_data}")
+        [[ "${peer_ep}" == "(none)" ]] && peer_ep=""
+        [[ ! "${peer_hs}" =~ ^[0-9]+$ ]] && peer_hs=0
+        [[ ! "${peer_rx}" =~ ^[0-9]+$ ]] && peer_rx=0
+        [[ ! "${peer_tx}" =~ ^[0-9]+$ ]] && peer_tx=0
+      fi
+
+      local ep_display="${peer_ep:-${pip}:${pport}}"
+
+      local row_color status_str hs_str
+      if ! ${iface_up} || [[ -z "${peer_line_data}" ]]; then
+        row_color="${RED}"
+        status_str="✗ down"
+        hs_str="—"
+        peer_rx=0
+        peer_tx=0
+      elif [[ "${peer_hs}" == "0" ]]; then
+        row_color="${LBLUE}"
+        status_str="${spin} wait"
+        hs_str="—"
+      else
+        local hs_age=$(( now_ts - peer_hs ))
+        if (( hs_age < 30 )); then
+          row_color="${GREEN}"
+          status_str="✓ up"
+          hs_str="${hs_age}s"
+          healthy_count=$(( healthy_count + 1 ))
+        elif (( hs_age < 120 )); then
+          row_color="${YELLOW}"
+          status_str="~ stale"
+          hs_str="${hs_age}s"
+        else
+          row_color="${RED}"
+          status_str="✗ down"
+          hs_str="${hs_age}s"
+        fi
+      fi
+
+      local prx_str; prx_str=$(_fmt_bytes "${peer_rx}")
+      local ptx_str; ptx_str=$(_fmt_bytes "${peer_tx}")
+
+      _box_line "${row_color}$(printf '%-9s %-13s %-21s %-10s %-8s %s / %s' \
+        "${pname}" "${ptunnel}" "${ep_display}" \
+        "${status_str}" "${hs_str}" \
+        "${prx_str}" "${ptx_str}")${RESET}"
+    done
+
+    _box_sep
+
+    # system status
+    _box_line "${BOLD}${WHITE}SYSTEM${RESET}"
+    _box_line "${DIM}$(printf '%.0s─' $(seq 1 $((BOX_WIDTH-4))))${RESET}"
+    _box_line "listener:     ${listener_str}"
+    _box_line "sync loop:    ${sync_str}  •  interval: ${WHITE}${sync_interval_hint}${RESET} (${mcolor}${sync_mode}${RESET})"
+    _box_line "interface:    ${iface_str}"
+    _box_line "node keys:    ${WHITE}${key_str}${RESET}  •  czar pubkey: ${czar_key_str}"
+    _box_line "mesh traffic: ${GREEN}↓ ${total_rx_str} received${RESET}  ${PINK}↑ ${total_tx_str} sent${RESET}"
+    _box_sep
+
+    # recent events
+    _box_line "${BOLD}${WHITE}RECENT EVENTS${RESET}"
+    _box_line "${DIM}$(printf '%.0s─' $(seq 1 $((BOX_WIDTH-4))))${RESET}"
+
+    if [[ -z "${log_lines}" ]]; then
+      _box_line "${DIM}no events yet${RESET}"
+    else
+      while IFS= read -r log_line; do
+        [[ -z "${log_line}" ]] && continue
+        local lcolor="${WHITE}"
+        [[ "${log_line}" == *"SECURITY"* ]]  && lcolor="${RED}"
+        [[ "${log_line}" == *"[WARN]"* ]]    && lcolor="${YELLOW}"
+        [[ "${log_line}" == *"[DEBUG]"* ]]   && lcolor="${DIM}"
+        [[ "${log_line}" == *"[HEAL]"* ]]    && lcolor="${CYAN}"
+        [[ "${log_line}" == *"[FEVER]"* ]]   && lcolor="${RED}${BOLD}"
+        [[ "${log_line}" == *"[SYNC]"* ]]    && lcolor="${LBLUE}"
+        _box_line "${lcolor}${log_line}${RESET}"
+      done <<< "${log_lines}"
+    fi
+
+    _box_sep
+
+    # footer
+    local fever_str="${GREEN}no fever${RESET}"
+    [[ "${fever}" == "true" ]] && fever_str="${RED}${BOLD}⚠ FEVER ACTIVE${RESET}"
+
+    _box_line "${mcolor}●${RESET} ${mcolor}${sync_mode}${RESET}  •  ${fever_str}  •  ${WHITE}${healthy_count}/${#PEER_NAMES[@]} healthy${RESET}  •  last sync: ${DIM}${last_sync_str}${RESET}  •  ${DIM}refreshed ${now_str}${RESET}"
+    _box_bot
+
+    # keyboard hint
+    local hint_recover="[r] recover"
+    [[ "${MY_IS_CZAR:-false}" == "true" ]] && hint_recover="[p] promote czar"
+    printf "  ${DIM}[q] quit  ${hint_recover}  [l] live log  Ctrl+C to exit${RESET}\n"
+
+    # keyboard input — non-blocking, 1 second timeout
+    local key=""
+    if read -r -s -n1 -t1 key 2>/dev/null; then
+      case "${key}" in
+        q|Q)
+          break
+          ;;
+        r|R)
+          if [[ "${MY_IS_CZAR:-false}" != "true" ]]; then
+            printf '\033[?25h'
+            printf '\033[0m\n'
+            cmd_mesh_recover &
+            printf '\033[?25l'
+          fi
+          ;;
+        p|P)
+          if [[ "${MY_IS_CZAR:-false}" == "true" ]]; then
+            printf '\033[?25h'
+            printf '\033[0m\n'
+            printf 'promote czar — enter new czar name: '
+            read -r new_czar
+            [[ -n "${new_czar}" ]] && printf 'ldown czar promote %s\n' "${new_czar}"
+            printf '\033[?25l'
+          fi
+          ;;
+        l|L)
+          printf '\033[?25h'
+          printf '\033[0m\n'
+          tail -f "${listener_log}"
+          printf '\033[?25l'
+          ;;
+      esac
+    fi
+  done
+
+  printf '\033[?25h'
+  printf '\033[0m\n'
+}
+
+# =============================================================================
 # cmd_mesh_status
 # =============================================================================
 # show the state of every peer in the mesh
@@ -1172,6 +1639,10 @@ cmd_mesh_reset() {
 # =============================================================================
 
 cmd_mesh_status() {
+  if [[ "${1:-}" == "--watch" ]]; then
+    cmd_mesh_watch
+    return 0
+  fi
   banner
   require_root
   check_dependency wg awk

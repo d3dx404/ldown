@@ -402,6 +402,16 @@ main() {
       shift
       source "${SCRIPT_DIR}/../lib/mesh.sh"
       local subcmd="${1:-}"; shift || true
+      # parse --watch flag for start/join
+      export OPT_WATCH=false
+      local -a mesh_args=()
+      for arg in "$@"; do
+        case "${arg}" in
+          --watch) OPT_WATCH=true ;;
+          *)       mesh_args+=("${arg}") ;;
+        esac
+      done
+      set -- "${mesh_args[@]+"${mesh_args[@]}"}"
       case "${subcmd}" in
         init)       cmd_mesh_init       "$@" ;;
         start)      cmd_mesh_start      "$@" ;;
@@ -415,6 +425,7 @@ main() {
         doctor)     cmd_mesh_doctor     "$@" ;;
         diff)       cmd_mesh_diff       "$@" ;;
         neighbors)  cmd_mesh_neighbors  "$@" ;;
+        watch)      cmd_mesh_watch      "$@" ;;
         *) err "unknown mesh subcommand: ${subcmd}"; exit 1 ;;
       esac
       ;;
