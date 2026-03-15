@@ -381,10 +381,12 @@ cmd_mesh_start() {
   wg_sync "${WG_INTERFACE}" "${WG_DIR}/${WG_INTERFACE}.conf"
   status_ok "interface up" "${WG_INTERFACE} — ${MY_TUNNEL_IP}/24"
 
+  export LDOWN_QUIET=true
   source "${BASH_SOURCE[0]%/*}/listener.sh"
   cmd_listener_start
   source "${BASH_SOURCE[0]%/*}/sync.sh"
   cmd_sync_start
+  export LDOWN_QUIET=false
   success "mesh started — ${MY_NAME} is live"
   printf '\n'
 }
