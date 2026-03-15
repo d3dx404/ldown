@@ -95,7 +95,7 @@ _peer_list() {
 }
 
 _do_join() {
-  local name="\$1" tunnel_ip="\$2" public_ip="\$3" pubkey="\$4"
+  local name="\$1" tunnel_ip="\$2" public_ip="\$3" pubkey="\$4" node_pub="\$5"
   _llog "INFO" "JOIN \${name} (\${tunnel_ip}) from \${public_ip}"
   [[ -n "\${name}" && -n "\${tunnel_ip}" && -n "\${public_ip}" && -n "\${pubkey}" ]] || {
     printf 'ERROR missing fields\n'; return 1; }
@@ -112,6 +112,14 @@ _do_join() {
     printf 'ERROR not in roster\n'; return 1; }
   printf '%s\n' "\${pubkey}" > "\${KEY_DIR}/\${name}.public.key"
   _llog "INFO" "stored pubkey for \${name}"
+
+  if [[ -n "\${node_pub}" ]]; then
+    printf '%s' "\${node_pub}" | base64 -d | \
+      openssl pkey -pubin -inform DER -outform PEM \
+      -out "\${KEY_DIR}/\${name}-node.pub" 2>/dev/null
+    chmod 644 "\${KEY_DIR}/\${name}-node.pub"
+    _llog "INFO" "stored node signing pubkey for \${name}"
+  fi
 
   # czar adds the joining node to its own WireGuard interface
   # every other node gets a PEER_ADD message — czar processes the JOIN directly
@@ -219,16 +227,27 @@ sign_msg() {
 verify_msg() {
   local received_sig="\$1"
   local payload="\$2"
+  local sender_name="\$3"
+  local sender_pub="\${KEY_DIR}/\${sender_name}-node.pub"
   local czar_pub="\${KEY_DIR}/czar-control.pub"
-  if [[ ! -f "\${czar_pub}" ]]; then
-    _llog "WARN" "czar public key not found — rejecting message"
+  local pubkey_to_use=""
+  
+  # try sender's node public key first
+  if [[ -n "\${sender_name}" && -f "\${sender_pub}" ]]; then
+    pubkey_to_use="\${sender_pub}"
+  # fall back to czar key for czar-signed messages
+  elif [[ -f "\${czar_pub}" ]]; then
+    pubkey_to_use="\${czar_pub}"
+  else
+    _llog "WARN" "no public key available for verification (sender_name=\${sender_name})"
     return 1
   fi
+  
   local tmpdir_sig
   tmpdir_sig="\$(mktemp)"
   printf '%s' "\${received_sig}" | base64 -d > "\${tmpdir_sig}" 2>/dev/null
   printf '%s' "\${payload}" | \
-    openssl dgst -sha256 -verify "\${czar_pub}" \
+    openssl dgst -sha256 -verify "\${pubkey_to_use}" \
     -signature "\${tmpdir_sig}" >/dev/null 2>&1
   local result=\$?
   rm -f "\${tmpdir_sig}"
@@ -263,7 +282,8 @@ payload="\${line#* }"   # everything after the sig — the exact string that was
 _llog "DEBUG" "recv action=\${action} sig=\${sig:0:16}..."
 
 if [[ "\${action}" != "PUBKEY" && "\${action}" != "PING" ]]; then
-  verify_msg "\${sig}" "\${payload}" || {
+  sender_name="\${p[2]:-}"
+  verify_msg "\${sig}" "\${payload}" "\${sender_name}" || {
     _llog "WARN" "sig verify failed for \${action} — dropping"
     exit 1
   }
@@ -290,9 +310,9 @@ case "\${action}" in
     ;;
   JOIN)
     [[ "\${MY_IS_CZAR}" == "true" ]] || { printf 'ERROR not czar\n'; exit 1; }
-    # payload: JOIN name tunnel_ip public_ip pubkey
-    # p[0]=sig p[1]=JOIN p[2]=name p[3]=tunnel_ip p[4]=public_ip p[5]=pubkey
-    _do_join "\${p[2]:-}" "\${p[3]:-}" "\${p[4]:-}" "\${p[5]:-}"
+    # payload: JOIN name tunnel_ip public_ip pubkey node_signing_pubkey
+    # p[0]=sig p[1]=JOIN p[2]=name p[3]=tunnel_ip p[4]=public_ip p[5]=pubkey p[6]=node_signing_pubkey
+    _do_join "\${p[2]:-}" "\${p[3]:-}" "\${p[4]:-}" "\${p[5]:-}" "\${p[6]:-}"
     ;;
   LEAVE)
     [[ "\${MY_IS_CZAR}" == "true" ]] || { printf 'ERROR not czar\n'; exit 1; }

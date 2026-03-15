@@ -551,3 +551,48 @@ source_if_exists() {
   source "${file}"
   debug "sourced ${file}"
 }
+
+# ── message signing using node Ed25519 keys ────────────────
+# usage: sign_msg <payload>
+# signs with node private key if available, falls back to CLUSTER_TOKEN HMAC
+sign_msg() {
+  local payload="$1"
+  local node_key="${KEY_DIR}/${MY_NAME}-node.key"
+  if [[ -f "${node_key}" ]]; then
+    printf '%s' "${payload}" | \
+      openssl dgst -sha256 -sign "${node_key}" | \
+      base64 -w0
+  else
+    printf '%s' "${payload}${CLUSTER_TOKEN}" | \
+      sha256sum | awk '{print $1}'
+  fi
+}
+
+# ── message verification using node Ed25519 keys ────────────
+# usage: verify_msg <signature> <payload> <sender_name>
+# verifies signature using sender's node public key if available, falls back to CLUSTER_TOKEN HMAC
+verify_msg() {
+  local received_sig="$1"
+  local payload="$2"
+  local sender_name="$3"
+  local sender_pub="${KEY_DIR}/${sender_name}-node.pub"
+  if [[ -n "${sender_name}" && -f "${sender_pub}" ]]; then
+    local tmpsig
+    tmpsig="$(mktemp)"
+    printf '%s' "${received_sig}" | base64 -d > "${tmpsig}" 2>/dev/null
+    printf '%s' "${payload}" | \
+      openssl dgst -sha256 -verify "${sender_pub}" \
+      -signature "${tmpsig}" >/dev/null 2>&1
+    local result=$?
+    rm -f "${tmpsig}"
+    return ${result}
+  elif [[ -n "${CLUSTER_TOKEN}" ]]; then
+    local expected
+    expected="$(printf '%s' "${payload}${CLUSTER_TOKEN}" | \
+      sha256sum | awk '{print $1}')"
+    [[ "${received_sig}" == "${expected}" ]]
+  else
+    return 1
+  fi
+}
+}

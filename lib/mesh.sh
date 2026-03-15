@@ -597,8 +597,13 @@ cmd_mesh_join() {
   step "contacting czar"
   info "sending identity to czar at ${CZAR_IP}:${LDOWN_PORT}"
 
+  local node_signing_pub
+  node_signing_pub="$(openssl pkey \
+    -in /etc/ldown/keys/${MY_NAME}-node.pub \
+    -pubin -outform DER 2>/dev/null | base64 -w0)"
+
   local peer_list
-  local _join_payload="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pubkey}"
+  local _join_payload="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pubkey} ${node_signing_pub}"
   peer_list="$(printf '%s\n' "$(sign_msg "${_join_payload}") ${_join_payload}" \
     | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)" || \
     fatal "could not reach czar at ${CZAR_IP}:${LDOWN_PORT} — is the mesh running?"
