@@ -619,6 +619,7 @@ cmd_mesh_join() {
   declare -A _joined_pubkeys
 
   while IFS= read -r peer_line; do
+    warn "DEBUG peer_line=[${peer_line}]"
     [[ -z "${peer_line}" ]] && continue
     [[ "${peer_line}" =~ ^ERROR ]] && fatal "czar rejected join: ${peer_line}"
 
