@@ -595,4 +595,3 @@ verify_msg() {
     return 1
   fi
 }
-}
