@@ -200,24 +200,39 @@ line="\${line%%\$'\r'}"
 
 # ---------------------------------------------------------------------------
 # message signing — sign_msg / verify_msg
-# sign_msg <payload>  → sha256(payload + CLUSTER_TOKEN)
-# the token never appears on the wire; the sig is bound to this exact message
-# so a captured sig cannot be replayed for a different message type or content
+# sign_msg <payload>  → Ed25519 signature using czar control key
+# the signature is bound to this exact message and cannot be forged
+# without possession of the czar private key
 # ---------------------------------------------------------------------------
 sign_msg() {
-  printf '%s' "\$1\${CLUSTER_TOKEN}" | sha256sum | awk '{print \$1}'
+  local payload="\$1"
+  local privkey="\${KEY_DIR}/czar-control.key"
+  if [[ ! -f "\${privkey}" ]]; then
+    _llog "ERROR" "czar signing key not found: \${privkey}"
+    return 1
+  fi
+  printf '%s' "\${payload}" | \
+    openssl dgst -sha256 -sign "\${privkey}" | \
+    base64 -w0
 }
 
 verify_msg() {
   local received_sig="\$1"
   local payload="\$2"
-  if [[ -z "\${CLUSTER_TOKEN}" ]]; then
-    _llog "WARN" "CLUSTER_TOKEN not loaded — rejecting message"
+  local czar_pub="\${KEY_DIR}/czar-control.pub"
+  if [[ ! -f "\${czar_pub}" ]]; then
+    _llog "WARN" "czar public key not found — rejecting message"
     return 1
   fi
-  local expected
-  expected="\$(sign_msg "\${payload}")"
-  [[ "\${received_sig}" == "\${expected}" ]]
+  local tmpdir_sig
+  tmpdir_sig="\$(mktemp)"
+  printf '%s' "\${received_sig}" | base64 -d > "\${tmpdir_sig}" 2>/dev/null
+  printf '%s' "\${payload}" | \
+    openssl dgst -sha256 -verify "\${czar_pub}" \
+    -signature "\${tmpdir_sig}" >/dev/null 2>&1
+  local result=\$?
+  rm -f "\${tmpdir_sig}"
+  return \${result}
 }
 
 # wire format: <sig> <ACTION> <args...>
