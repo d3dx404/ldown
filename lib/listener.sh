@@ -161,7 +161,7 @@ _do_join() {
         -in "\${KEY_DIR}/\${name}-node.pub" \
         -pubin -outform DER 2>/dev/null | base64 -w0)"
     fi
-    local payload="PEER_ADD \${name} \${tunnel_ip} \${public_ip}:\${WG_PORT} \${pubkey} \${pkeepalive} \${node_pub_b64}"
+    local payload="PEER_ADD \${name} \${tunnel_ip} \${public_ip}:\${WG_PORT} \${pubkey} \${pkeepalive:-0} \${node_pub_b64}"
     local notify="\$(sign_msg "\${payload}") \${payload}"
     # send with one retry
     if ! printf '%s\n' "\${notify}" | ncat --wait 2 "\${pip}" "\${LDOWN_PORT}" >/dev/null 2>&1; then
@@ -337,7 +337,13 @@ case "\${action}" in
   PEER_ADD)
     # p[0]=sig p[1]=PEER_ADD p[2]=name p[3]=tunnel p[4]=endpoint p[5]=pubkey p[6]=keepalive p[7]=node_pub_b64
     pname="\${p[2]:-}" ptunnel="\${p[3]:-}" pendpoint="\${p[4]:-}"
-    ppubkey="\${p[5]:-}" pkeepalive="\${p[6]:-}" pnode_pub="\${p[7]:-}"
+    ppubkey="\${p[5]:-}"
+    pkeepalive="\${p[6]:-}"
+    pnode_pub="\${p[7]:-}"
+    
+    # treat 0 keepalive as empty
+    [[ "\${pkeepalive}" == "0" ]] && pkeepalive=""
+    
     is_valid_wg_key "\${ppubkey}" || { printf 'ERROR invalid pubkey\n'; exit 1; }
     wg_args=(wg set "\${WG_INTERFACE}" peer "\${ppubkey}" allowed-ips "\${ptunnel}/32" endpoint "\${pendpoint}")
     [[ -n "\${pkeepalive}" ]] && wg_args+=(persistent-keepalive "\${pkeepalive}")
