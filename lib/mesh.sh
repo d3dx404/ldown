@@ -995,11 +995,12 @@ cmd_mesh_export() {
   must "copy TLS cert" cp "${TLS_CERT}" "${stagedir}/tls.cert"
   status_ok "included" "tls.cert"
 
-  if [[ -f "${CLUSTER_PUB}" ]]; then
-    must "copy cluster.pub" cp "${CLUSTER_PUB}" "${stagedir}/cluster.pub"
-    status_ok "included" "cluster.pub"
+  local czar_pub="/etc/ldown/keys/czar-control.pub"
+  if [[ -f "${czar_pub}" ]]; then
+    cp "${czar_pub}" "${stagedir}/cluster.pub"
+    status_ok "included" "cluster.pub (czar signing key)"
   else
-    status_warn "cluster.pub" "not found — skipped"
+    fatal "czar-control.pub not found — run: ldown mesh init first"
   fi
 
   write_conf "${stagedir}/mesh_export.conf" "# ldown export bundle — ${ts}
