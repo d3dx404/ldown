@@ -553,18 +553,20 @@ source_if_exists() {
 }
 
 # ── message signing using node Ed25519 keys ────────────────
-# usage: sign_msg <payload>
-# signs with node private key if available, falls back to CLUSTER_TOKEN HMAC
+# usage: sign_msg <payload> [use_hmac]
+# signs with CLUSTER_TOKEN HMAC if use_hmac=true, otherwise Ed25519 with node key
+# falls back to HMAC if node key is unavailable
 sign_msg() {
   local payload="$1"
+  local use_hmac="${2:-false}"
   local node_key="${KEY_DIR}/${MY_NAME}-node.key"
-  if [[ -f "${node_key}" ]]; then
+  if [[ "${use_hmac}" == "true" || ! -f "${node_key}" ]]; then
+    printf '%s' "${payload}${CLUSTER_TOKEN}" | \
+      sha256sum | awk '{print $1}'
+  else
     printf '%s' "${payload}" | \
       openssl dgst -sha256 -sign "${node_key}" | \
       base64 -w0
-  else
-    printf '%s' "${payload}${CLUSTER_TOKEN}" | \
-      sha256sum | awk '{print $1}'
   fi
 }
 

@@ -604,7 +604,7 @@ cmd_mesh_join() {
 
   local peer_list
   local _join_payload="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pubkey} ${node_signing_pub}"
-  peer_list="$(printf '%s\n' "$(sign_msg "${_join_payload}") ${_join_payload}" \
+  peer_list="$(printf '%s\n' "$(sign_msg "${_join_payload}" "true") ${_join_payload}" \
     | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)" || \
     fatal "could not reach czar at ${CZAR_IP}:${LDOWN_PORT} — is the mesh running?"
 
