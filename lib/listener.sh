@@ -155,7 +155,13 @@ _do_join() {
     local ppub
     { read -r ppub < "\${KEY_DIR}/\${pname}.public.key"; } 2>/dev/null
     [[ -z "\${ppub}" ]] && continue
-    local payload="PEER_ADD \${name} \${tunnel_ip} \${public_ip}:\${WG_PORT} \${pubkey} \${pkeepalive}"
+    local node_pub_b64=""
+    if [[ -f "\${KEY_DIR}/\${name}-node.pub" ]]; then
+      node_pub_b64="\$(openssl pkey \
+        -in "\${KEY_DIR}/\${name}-node.pub" \
+        -pubin -outform DER 2>/dev/null | base64 -w0)"
+    fi
+    local payload="PEER_ADD \${name} \${tunnel_ip} \${public_ip}:\${WG_PORT} \${pubkey} \${pkeepalive} \${node_pub_b64}"
     local notify="\$(sign_msg "\${payload}") \${payload}"
     # send with one retry
     if ! printf '%s\n' "\${notify}" | ncat --wait 2 "\${pip}" "\${LDOWN_PORT}" >/dev/null 2>&1; then
@@ -329,14 +335,22 @@ case "\${action}" in
     _do_leave "\${p[2]:-}" "\${p[3]:-}" "\${p[4]:-}"
     ;;
   PEER_ADD)
-    # p[0]=sig p[1]=PEER_ADD p[2]=name p[3]=tunnel p[4]=endpoint p[5]=pubkey p[6]=keepalive
+    # p[0]=sig p[1]=PEER_ADD p[2]=name p[3]=tunnel p[4]=endpoint p[5]=pubkey p[6]=keepalive p[7]=node_pub_b64
     pname="\${p[2]:-}" ptunnel="\${p[3]:-}" pendpoint="\${p[4]:-}"
-    ppubkey="\${p[5]:-}" pkeepalive="\${p[6]:-}"
+    ppubkey="\${p[5]:-}" pkeepalive="\${p[6]:-}" pnode_pub="\${p[7]:-}"
     is_valid_wg_key "\${ppubkey}" || { printf 'ERROR invalid pubkey\n'; exit 1; }
     wg_args=(wg set "\${WG_INTERFACE}" peer "\${ppubkey}" allowed-ips "\${ptunnel}/32" endpoint "\${pendpoint}")
     [[ -n "\${pkeepalive}" ]] && wg_args+=(persistent-keepalive "\${pkeepalive}")
     "\${wg_args[@]}" 2>/dev/null && printf 'OK\n' || printf 'ERROR wg set failed\n'
     wg_write_peer "\${PEER_DIR}/peer-\${ptunnel}.conf" "\${ppubkey}" "\${ptunnel}/32" "\${pendpoint}" "\${pkeepalive}"
+    
+    if [[ -n "\${pnode_pub}" ]]; then
+      printf '%s' "\${pnode_pub}" | base64 -d | \
+        openssl pkey -pubin -inform DER -outform PEM \
+        -out "\${KEY_DIR}/\${pname}-node.pub" 2>/dev/null
+      chmod 644 "\${KEY_DIR}/\${pname}-node.pub"
+      _llog "INFO" "stored node signing pubkey for \${pname} via PEER_ADD"
+    fi
     _llog "INFO" "PEER_ADD \${pname} (\${ptunnel}) persisted"
     ;;
   PEER_REMOVE)
