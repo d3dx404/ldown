@@ -1148,10 +1148,19 @@ cmd_mesh_import() {
   must "install tls.cert" cp "${stagedir}/tls.cert" "${CONFIG_DIR}/peer-bootstrap.cert"
   status_ok "installed" "${CONFIG_DIR}/peer-bootstrap.cert"
 
-  if [[ -f "${stagedir}/cluster.pub" ]]; then
-    must "install cluster.pub" cp "${stagedir}/cluster.pub" "${CLUSTER_PUB}"
-    must "secure cluster.pub"  chmod 644 "${CLUSTER_PUB}"
-    status_ok "installed" "${CLUSTER_PUB}"
+  local bundle_czar_pub="${stagedir}/cluster.pub"
+  if [[ -f "${bundle_czar_pub}" ]]; then
+    mkdir -p /etc/ldown/keys || fatal "cannot create /etc/ldown/keys"
+    cp "${bundle_czar_pub}" /etc/ldown/keys/czar-control.pub
+    chmod 644 /etc/ldown/keys/czar-control.pub
+    local czar_fp
+    czar_fp="$(openssl pkey \
+      -in /etc/ldown/keys/czar-control.pub \
+      -pubin -outform DER 2>/dev/null \
+      | sha256sum | awk '{print $1}')"
+    status_ok "czar signing key installed" "${czar_fp}"
+  else
+    fatal "cluster.pub missing from bundle — export bundle is incomplete"
   fi
 
   must "install mesh_export.conf" cp "${stagedir}/mesh_export.conf" \
