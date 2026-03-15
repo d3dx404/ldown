@@ -34,7 +34,7 @@ _init_colors() {
     # UI roles
     C_INFO="${T_BLUE}"
     C_SUCCESS="${T_PINK}"
-    C_WARN="${T_WHITE}"
+    C_WARN='\033[0;33m'  # yellow
     C_ERR='\033[0;31m'
     C_FATAL='\033[1;31m'
     C_STEP="${T_BLUE}"

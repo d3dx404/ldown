@@ -1193,7 +1193,9 @@ cmd_mesh_status() {
   check_dependency wg awk
 
   if [[ ! -f "${MESH_CONF}" ]]; then
-    printf 'This node is not part of a mesh. Run: ldown mesh init\n'
+    printf '\n  [!] this node has left the mesh or has not yet joined\n'
+    printf '  [*] to rejoin:  ldown mesh join\n'
+    printf '  [*] to start fresh: ldown mesh init\n\n'
     exit 0
   fi
   source_if_exists "${MESH_CONF}"
@@ -1271,7 +1273,7 @@ cmd_mesh_status() {
     # status
     local status_display
     if [[ -z "${peer_pubkey}" ]]; then
-      status_display="no config"
+      status_display="not configured"
     elif [[ "${hs_ts}" == "0" ]]; then
       status_display="down"
     elif (( now - hs_ts < 180 )); then

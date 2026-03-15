@@ -314,9 +314,16 @@ cmd_listener_start() {
   require_root
   check_dependency ncat wg fuser
 
-  [[ -f "${MESH_CONF}" ]] || fatal "mesh.conf not found — run: ldown mesh init"
-  source_if_exists "${MESH_CONF}"
-  roster_load "${ROSTER_CONF}" || fatal "roster failed to load"
+  if [[ ! -f "${MESH_CONF}" ]]; then
+    warn "mesh.conf not found — listener cannot load node identity"
+    warn "missing: /etc/ldown/mesh.conf"
+    warn "missing: MY_NAME, MY_IP, MY_TUNNEL_IP will be empty"
+    warn "listener starting in degraded mode — PUBKEY requests will fail"
+    _listener_log "WARN" "starting without mesh.conf — node identity unavailable"
+  else
+    source_if_exists "${MESH_CONF}"
+    roster_load "${ROSTER_CONF}" || true
+  fi
 
   # ensure PID dir exists
   mkdir -p /run/ldown
