@@ -213,6 +213,20 @@ cmd_mesh_init() {
   [[ -n "${tls_fingerprint}" ]] || fatal "failed to extract TLS fingerprint from ${TLS_CERT}"
   status_ok "fingerprint" "${tls_fingerprint}"
 
+  # compute czar signing key fingerprint if available
+  local czar_fp=""
+  if [[ "${MY_IS_CZAR}" == "true" ]]; then
+    czar_fp="$(openssl pkey \
+      -in /etc/ldown/keys/czar-control.pub \
+      -pubin -outform DER 2>/dev/null \
+      | sha256sum | awk '{print $1}')"
+  elif [[ -f "/etc/ldown/keys/czar-control.pub" ]]; then
+    czar_fp="$(openssl pkey \
+      -in /etc/ldown/keys/czar-control.pub \
+      -pubin -outform DER 2>/dev/null \
+      | sha256sum | awk '{print $1}')"
+  fi
+
   # ── write mesh.conf ─────────────────────────────────────
   step "writing mesh.conf"
 
@@ -233,6 +247,7 @@ WG_PORT=${WG_PORT}
 LDOWN_PORT=${LDOWN_PORT}
 SUBNET=${SUBNET}
 TLS_FINGERPRINT=\"${tls_fingerprint}\"
+CZAR_PUBKEY_FP=\"${czar_fp}\"
 WG_PUBKEY=\"${my_pubkey}\"
 INIT_TIME=\"${ts}\""
 
