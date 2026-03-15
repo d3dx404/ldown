@@ -565,7 +565,7 @@ sign_msg() {
       sha256sum | awk '{print $1}'
   else
     printf '%s' "${payload}" | \
-      openssl dgst -sha256 -sign "${node_key}" | \
+      openssl pkeyutl -sign -inkey "${node_key}" | \
       base64 -w0
   fi
 }
@@ -583,8 +583,8 @@ verify_msg() {
     tmpsig="$(mktemp)"
     printf '%s' "${received_sig}" | base64 -d > "${tmpsig}" 2>/dev/null
     printf '%s' "${payload}" | \
-      openssl dgst -sha256 -verify "${sender_pub}" \
-      -signature "${tmpsig}" >/dev/null 2>&1
+      openssl pkeyutl -verify -pubin -inkey "${sender_pub}" \
+      -sigfile "${tmpsig}" >/dev/null 2>&1
     local result=$?
     rm -f "${tmpsig}"
     return ${result}

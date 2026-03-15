@@ -87,17 +87,15 @@ _peer_list() {
     { read -r ppubkey < "\${pubfile}"; } 2>/dev/null || continue
     [[ -n "\${ppubkey}" ]] || continue
     local pnode_pub_b64=""
-    if [[ -f "\${KEY_DIR}/\${pname}-node.pub" ]]; then
+    local pnode_pub_file="\${KEY_DIR}/\${pname}-node.pub"
+    if [[ -f "\${pnode_pub_file}" ]]; then
       pnode_pub_b64="\$(openssl pkey \
-        -in "\${KEY_DIR}/\${pname}-node.pub" \
+        -in "\${pnode_pub_file}" \
         -pubin -outform DER 2>/dev/null | base64 -w0)"
     fi
-    local node_field="\${pnode_pub_b64}"
-    if [[ -n "\${pkeepalive}" ]]; then
-      printf '%s %s %s:%s %s %s %s\n' "\${pname}" "\${ptunnel}" "\${pip}" "\${pport}" "\${ppubkey}" "\${pkeepalive}" "\${node_field}"
-    else
-      printf '%s %s %s:%s %s %s %s\n' "\${pname}" "\${ptunnel}" "\${pip}" "\${pport}" "\${ppubkey}" "0" "\${node_field}"
-    fi
+    printf '%s %s %s:%s %s %s %s\n' \
+      "\${pname}" "\${ptunnel}" "\${pip}" "\${pport}" \
+      "\${ppubkey}" "\${pkeepalive:-0}" "\${pnode_pub_b64}"
   done
 }
 
@@ -240,7 +238,7 @@ sign_msg() {
     return 1
   fi
   printf '%s' "\${payload}" | \
-    openssl dgst -sha256 -sign "\${privkey}" | \
+    openssl pkeyutl -sign -inkey "\${privkey}" | \
     base64 -w0
 }
 
@@ -267,8 +265,8 @@ verify_msg() {
   tmpdir_sig="\$(mktemp)"
   printf '%s' "\${received_sig}" | base64 -d > "\${tmpdir_sig}" 2>/dev/null
   printf '%s' "\${payload}" | \
-    openssl dgst -sha256 -verify "\${pubkey_to_use}" \
-    -signature "\${tmpdir_sig}" >/dev/null 2>&1
+    openssl pkeyutl -verify -pubin -inkey "\${pubkey_to_use}" \
+    -sigfile "\${tmpdir_sig}" >/dev/null 2>&1
   local result=\$?
   rm -f "\${tmpdir_sig}"
   return \${result}
