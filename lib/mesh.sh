@@ -18,12 +18,19 @@ source "${_MESH_DIR}/roster.sh"
 # internal helpers
 # =============================================================================
 
-# sign a control plane message with the cluster token
-# usage: sign_msg <payload>  →  sha256(payload + CLUSTER_TOKEN)
-# the token never appears on the wire; the sig is bound to this exact message
+# sign a control plane message with ed25519 or fallback to CLUSTER_TOKEN
+# usage: sign_msg <payload>  →  Ed25519 signature or sha256(payload + CLUSTER_TOKEN)
+# if czar key exists, use cryptographic signing; otherwise use HMAC fallback
 sign_msg() {
-  local msg="$1"
-  printf '%s' "${msg}${CLUSTER_TOKEN}" | sha256sum | awk '{print $1}'
+  local payload="$1"
+  local privkey="${KEY_DIR}/czar-control.key"
+  if [[ ! -f "${privkey}" ]]; then
+    printf '%s' "${payload}${CLUSTER_TOKEN}" | sha256sum | awk '{print $1}'
+    return
+  fi
+  printf '%s' "${payload}" | \
+    openssl dgst -sha256 -sign "${privkey}" | \
+    base64 -w0
 }
 
 # serve this node's public key on LDOWN_PORT for exactly one connection
@@ -173,6 +180,20 @@ cmd_mesh_init() {
   { read -r my_pubkey < "${pubfile}"; } 2>/dev/null || true
   [[ -n "${my_pubkey}" ]] || fatal "pubkey is empty — check wireguard-tools"
 
+  # ── node signing keypair ────────────────────────────────
+  local node_key="${KEY_DIR}/${MY_NAME}-node.key"
+  local node_pub="${KEY_DIR}/${MY_NAME}-node.pub"
+  if [[ ! -f "${node_key}" ]]; then
+    step "generating node signing keypair"
+    openssl genpkey -algorithm ed25519 -out "${node_key}" 2>/dev/null
+    openssl pkey -in "${node_key}" -pubout -out "${node_pub}" 2>/dev/null
+    chmod 600 "${node_key}"
+    chmod 644 "${node_pub}"
+    status_ok "node signing keypair" "${node_pub}"
+  else
+    status_ok "node signing keypair exists" "${node_key} — skipping"
+  fi
+
   # ── czar signing keypair ────────────────────────────────
   if [[ "${MY_IS_CZAR}" == "true" ]]; then
     local czar_key="/etc/ldown/keys/czar-control.key"
@@ -227,6 +248,10 @@ cmd_mesh_init() {
       | sha256sum | awk '{print $1}')"
   fi
 
+  # extract node signing public key for mesh.conf
+  local node_signing_pub
+  node_signing_pub="$(cat "${node_pub}" 2>/dev/null | tr -d '\n')"
+
   # ── write mesh.conf ─────────────────────────────────────
   step "writing mesh.conf"
 
@@ -248,6 +273,7 @@ LDOWN_PORT=${LDOWN_PORT}
 SUBNET=${SUBNET}
 TLS_FINGERPRINT=\"${tls_fingerprint}\"
 CZAR_PUBKEY_FP=\"${czar_fp}\"
+NODE_SIGNING_PUBKEY=\"${node_signing_pub}\"
 WG_PUBKEY=\"${my_pubkey}\"
 INIT_TIME=\"${ts}\""
 
