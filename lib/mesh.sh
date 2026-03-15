@@ -173,6 +173,22 @@ cmd_mesh_init() {
   { read -r my_pubkey < "${pubfile}"; } 2>/dev/null || true
   [[ -n "${my_pubkey}" ]] || fatal "pubkey is empty — check wireguard-tools"
 
+  # ── czar signing keypair ────────────────────────────────
+  if [[ "${MY_IS_CZAR}" == "true" ]]; then
+    local czar_key="/etc/ldown/keys/czar-control.key"
+    local czar_pub="/etc/ldown/keys/czar-control.pub"
+    if [[ ! -f "${czar_key}" ]]; then
+      step "generating czar signing keypair"
+      openssl genpkey -algorithm ed25519 -out "${czar_key}" 2>/dev/null
+      openssl pkey -in "${czar_key}" -pubout -out "${czar_pub}" 2>/dev/null
+      chmod 600 "${czar_key}"
+      chmod 644 "${czar_pub}"
+      status_ok "czar signing keypair" "${czar_pub}"
+    else
+      status_ok "czar signing keypair exists" "${czar_key} — skipping"
+    fi
+  fi
+
   # ── TLS cert ────────────────────────────────────────────
   step "TLS certificate"
 
