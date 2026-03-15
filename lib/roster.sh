@@ -314,8 +314,10 @@ _validate_roster() {
 
     # warnings — soft failures
     if (( ${#RELAY_IPS[@]} == 0 )); then
-        warn "no --relay node defined"
-        warn "NAT traversal will not work for double-NAT scenarios"
+        [[ "${LDOWN_QUIET:-false}" != "true" ]] && \
+            warn "no --relay node defined"
+        [[ "${LDOWN_QUIET:-false}" != "true" ]] && \
+            warn "NAT traversal will not work for double-NAT scenarios"
     fi
 
     # relay behind NAT warning
