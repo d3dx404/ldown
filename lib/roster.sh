@@ -86,7 +86,7 @@ _roster_reset() {
 
 # =============================================================================
 # ip detection — finds which roster entry belongs to this machine
-# tries multiple sources, first match against roster wins
+# tries hostname first, then falls back to OPT_IP if provided
 # =============================================================================
 
 _detect_my_ip() {
@@ -106,11 +106,10 @@ _detect_my_ip() {
         [[ -n "$IFACE_IP" ]] && CANDIDATES+=("$IFACE_IP")
     done < <(hostname -I 2>/dev/null | tr ' ' '\n')
 
-    # source 3 — external public IP (last resort, slowest)
-    # try two endpoints in case one is down
-    local PUBLIC_IP
-    PUBLIC_IP=$(curl -fs --max-time 5 https://api.ipify.org 2>/dev/null              || curl -fs --max-time 5 ifconfig.me 2>/dev/null)
-    [[ -n "$PUBLIC_IP" ]] && CANDIDATES+=("$PUBLIC_IP")
+    # source 3 — fallback to OPT_IP if provided
+    if [[ -n "${OPT_IP:-}" ]]; then
+        CANDIDATES+=("${OPT_IP}")
+    fi
 
     # try each candidate against roster — first match wins
     for IP in "${CANDIDATES[@]}"; do
@@ -252,14 +251,13 @@ _validate_roster() {
         warn "this machine IP was not found in roster.conf"
         warn "add this machine to the roster before running init"
         warn "detected IP candidates were:"
-        local _ROUTE_IP _IFACE_IP _PUB_IP
+        local _ROUTE_IP _IFACE_IP
         _ROUTE_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1);exit}}')
         [[ -n "$_ROUTE_IP" ]] && warn "  routing:   ${_ROUTE_IP}"
         while IFS= read -r _IFACE_IP; do
             [[ -n "$_IFACE_IP" ]] && warn "  interface: ${_IFACE_IP}"
         done < <(hostname -I 2>/dev/null | tr ' ' '\n')
-        _PUB_IP=$(curl -fs --max-time 5 https://api.ipify.org 2>/dev/null || curl -fs --max-time 5 ifconfig.me 2>/dev/null)
-        [[ -n "$_PUB_IP" ]] && warn "  public:    ${_PUB_IP}"
+        [[ -n "${OPT_IP:-}" ]] && warn "  --ip flag: ${OPT_IP}"
         ERRORS=$((ERRORS + 1))
     fi
 

@@ -102,6 +102,23 @@ cmd_mesh_init() {
   banner
   require_root
 
+  # parse flags
+  local OPT_IP
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ip)
+        OPT_IP="${2:-}"
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  # export OPT_IP so roster.sh can use it for IP detection
+  export OPT_IP
+
   step "checking dependencies"
   check_dependency wg openssl ncat
 
@@ -1031,7 +1048,19 @@ cmd_mesh_import() {
   status_ok "decrypted" "ok"
 
   step "unpacking bundle"
-  must "unpack tarball" tar -xzf "${tarball}" -C "${tmpdir}"
+  must "unpack tarball" tar -xzf "${tarball}" \
+    --no-same-owner \
+    --no-same-permissions \
+    -C "${tmpdir}"
+
+  # verify no path traversal in extracted files
+  while IFS= read -r -d '' extracted_file; do
+    local real_path
+    real_path="$(realpath "${extracted_file}")"
+    if [[ "${real_path}" != "${tmpdir}"* ]]; then
+      fatal "path traversal detected in bundle: ${extracted_file}"
+    fi
+  done < <(find "${tmpdir}" -print0)
 
   local stagedir
   stagedir="$(find "${tmpdir}" -maxdepth 1 -mindepth 1 -type d | head -1)"
@@ -1052,7 +1081,21 @@ cmd_mesh_import() {
   status_ok "mesh_export.conf" "present"
   status_ok "tls.cert"         "present"
 
-  source_if_exists "${stagedir}/mesh_export.conf"
+  local import_file="${stagedir}/mesh_export.conf"
+  local key val
+  while IFS='=' read -r key val; do
+    val="${val%\"}"
+    val="${val#\"}"
+    case "${key}" in
+      CZAR_IP)         CZAR_IP="${val}" ;;
+      CZAR_TUNNEL_IP)  CZAR_TUNNEL_IP="${val}" ;;
+      LDOWN_PORT)      LDOWN_PORT="${val}" ;;
+      WG_PORT)         WG_PORT="${val}" ;;
+      SUBNET)          SUBNET="${val}" ;;
+      EXPORTED_BY)     EXPORTED_BY="${val}" ;;
+      EXPORTED_AT)     EXPORTED_AT="${val}" ;;
+    esac
+  done < "${import_file}"
   printf '\n'
   info "exported by: ${EXPORTED_BY:-unknown}"
   info "exported at: ${EXPORTED_AT:-unknown}"

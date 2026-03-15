@@ -254,6 +254,16 @@ if [[ "\${action}" != "PUBKEY" && "\${action}" != "PING" ]]; then
   }
 fi
 
+# source-IP check for czar-only messages
+CZAR_ONLY_ACTIONS="PEER_ADD PEER_REMOVE RECONNECT REVIVE"
+if [[ "\${CZAR_ONLY_ACTIONS}" == *"\${action}"* ]]; then
+  if [[ "\${NCAT_REMOTE_ADDR}" != "\${CZAR_IP}" ]]; then
+    _llog "WARN" "[SECURITY] \${action} rejected — sender \${NCAT_REMOTE_ADDR} is not czar \${CZAR_IP}"
+    printf 'ERROR unauthorized\n'
+    exit 1
+  fi
+fi
+
 case "\${action}" in
   PUBKEY)
     local pubfile="\${KEY_DIR}/\${MY_NAME}.public.key"

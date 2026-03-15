@@ -206,8 +206,23 @@ cmd_sync_start() {
     while true; do
       sleep "${SYNC_INTERVAL}"
 
-      # source fresh mesh state each cycle
-      source_if_exists "${MESH_CONF}" 2>/dev/null || continue
+      # source fresh mesh state each cycle — parse whitelist only
+      local key val
+      while IFS='=' read -r key val; do
+        val="${val%\"}"
+        val="${val#\"}"
+        case "${key}" in
+          MY_NAME)        MY_NAME="${val}" ;;
+          MY_IP)          MY_IP="${val}" ;;
+          MY_TUNNEL_IP)   MY_TUNNEL_IP="${val}" ;;
+          MY_IS_CZAR)     MY_IS_CZAR="${val}" ;;
+          CZAR_IP)        CZAR_IP="${val}" ;;
+          CZAR_TUNNEL_IP) CZAR_TUNNEL_IP="${val}" ;;
+          WG_PORT)        WG_PORT="${val}" ;;
+          LDOWN_PORT)     LDOWN_PORT="${val}" ;;
+          SUBNET)         SUBNET="${val}" ;;
+        esac
+      done < "${MESH_CONF}" 2>/dev/null || continue
       roster_load "${ROSTER_CONF}" 2>/dev/null || continue
 
       # skip if WG interface is down
