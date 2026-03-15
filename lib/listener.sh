@@ -281,10 +281,19 @@ payload="\${line#* }"   # everything after the sig — the exact string that was
 
 _llog "DEBUG" "recv action=\${action} sig=\${sig:0:16}..."
 
-if [[ "\${action}" != "PUBKEY" && "\${action}" != "PING" ]]; then
+if [[ "\${action}" == "JOIN" ]]; then
+  # JOIN uses CLUSTER_TOKEN — node pubkey not yet stored
+  local expected
+  expected="\$(printf '%s' "\${payload}\${CLUSTER_TOKEN}" | \
+    sha256sum | awk '{print \$1}')"
+  if [[ "\${sig}" != "\${expected}" ]]; then
+    _llog "WARN" "JOIN sig verify failed — dropping"
+    exit 1
+  fi
+elif [[ "\${action}" != "PUBKEY" && "\${action}" != "PING" ]]; then
   sender_name="\${p[2]:-}"
   verify_msg "\${sig}" "\${payload}" "\${sender_name}" || {
-    _llog "WARN" "sig verify failed for \${action} — dropping"
+    _llog "WARN" "sig verify failed for \${action} from \${sender_name} — dropping"
     exit 1
   }
 fi
