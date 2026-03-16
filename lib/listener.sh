@@ -301,8 +301,8 @@ payload="\${line#* }"   # everything after the sig — the exact string that was
 
 _llog "DEBUG" "recv action=\${action} sig=\${sig:0:16}..."
 
-if [[ "\${action}" == "JOIN" ]]; then
-  # JOIN uses CLUSTER_TOKEN — node pubkey not yet stored
+if [[ "\${action}" == "JOIN" || "\${action}" == "LEAVE" ]]; then
+  # JOIN/LEAVE use CLUSTER_TOKEN — node pubkey not yet stored
   expected="\$(printf '%s' "\${payload}\${CLUSTER_TOKEN}" | \
     sha256sum | awk '{print \$1}')"
   if [[ "\${sig}" != "\${expected}" ]]; then
