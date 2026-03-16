@@ -237,9 +237,11 @@ sign_msg() {
     _llog "ERROR" "czar signing key not found: \${privkey}"
     return 1
   fi
-  printf '%s' "\${payload}" | \
-    openssl pkeyutl -sign -inkey "\${privkey}" | \
-    base64 -w0
+  local tmpf="\$(mktemp)"
+  printf '%s' "\${payload}" > "\${tmpf}"
+  openssl pkeyutl -sign -inkey "\${privkey}" \
+    -in "\${tmpf}" | base64 -w0
+  rm -f "\${tmpf}"
 }
 
 verify_msg() {
@@ -301,7 +303,6 @@ _llog "DEBUG" "recv action=\${action} sig=\${sig:0:16}..."
 
 if [[ "\${action}" == "JOIN" ]]; then
   # JOIN uses CLUSTER_TOKEN — node pubkey not yet stored
-  local expected
   expected="\$(printf '%s' "\${payload}\${CLUSTER_TOKEN}" | \
     sha256sum | awk '{print \$1}')"
   if [[ "\${sig}" != "\${expected}" ]]; then
