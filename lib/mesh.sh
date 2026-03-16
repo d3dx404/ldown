@@ -549,7 +549,7 @@ cmd_mesh_join() {
       fi
       sleep 1
     done
-    [[ $attempt -gt 20 ]] && status_warn "${peer_name}" "no handshake after 20s — may still converge"
+    [[ $attempt -gt 20 ]] && status_warn "${peer_name}" "no handshake yet — sync loop will connect within 30s"
   done
 
   printf '\n'
@@ -558,6 +558,14 @@ cmd_mesh_join() {
   [[ "${failed}" -gt 0 ]] && status_warn "peers skipped" "${failed}"
   divider
   printf '\n'
+
+  if (( failed > 0 )); then
+    printf '\n'
+    info "some peers not yet reachable — this is normal during join flood"
+    info "the sync loop runs every 30s and will connect missing peers"
+    info "run: ldown mesh status --watch  to watch them come online"
+    printf '\n'
+  fi
 
   if [[ "${confirmed}" -eq 0 ]]; then
     warn "connected to 0 peers — czar may be only node, or timing issue"
@@ -619,7 +627,7 @@ cmd_mesh_leave() {
 
   local _leave_payload="LEAVE ${MY_NAME} ${MY_TUNNEL_IP} ${my_pubkey}"
   local response
-  response="$(printf '%s\n' "$(sign_msg "${_leave_payload}") ${_leave_payload}" | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)" || true
+  response="$(printf '%s\n' "$(sign_msg "${_leave_payload}" "true") ${_leave_payload}" | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)" || true
   
   if [[ "${response}" == *"OK"* ]]; then
     status_ok "czar notified" "${CZAR_IP}"
@@ -1573,10 +1581,13 @@ cmd_mesh_watch() {
 
         _sep
 
-        printf '\033[K  %s●%s %s%s%s  %s•%s  %s  %s•%s  %s%d/%d healthy%s  %s•%s  last sync: %s%s%s\n' \
+        local heal_str=""
+        (( healthy_count < ${#PEER_NAMES[@]} )) && heal_str=" ${T_DIM}— sync healing${RESET}"
+
+        printf '\033[K  %s●%s %s%s%s  %s•%s  %s  %s•%s  %s%d/%d healthy%s%s  %s•%s  last sync: %s%s%s\n' \
           "${mcolor}" "${RESET}" "${mcolor}" "${sync_mode}" "${RESET}" \
           "${T_DIM}" "${RESET}" "${fever_str}" "${T_DIM}" "${RESET}" \
-          "${T_WHITE}" "${healthy_count}" "${#PEER_NAMES[@]}" "${RESET}" \
+          "${T_WHITE}" "${healthy_count}" "${#PEER_NAMES[@]}" "${RESET}" "${heal_str}" \
           "${T_DIM}" "${RESET}" "${T_DIM}" "${last_sync_str}" "${RESET}"
 
         _sep
