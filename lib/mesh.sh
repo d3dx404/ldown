@@ -1181,17 +1181,17 @@ cmd_mesh_watch() {
   LDOWN_QUIET=true roster_load "${ROSTER_CONF}" >/dev/null 2>&1 || true
 
   # ── trans flag palette ───────────────────────────────────
-  local T_BLUE='\033[38;5;117m'       # trans blue
-  local T_PINK='\033[38;5;218m'       # trans pink
-  local T_WHITE='\033[0;97m'          # bright white
-  local T_HOT='\033[38;5;205m'        # hot pink accent
-  local T_SKY='\033[38;5;153m'        # sky blue accent
-  local T_LILAC='\033[38;5;183m'      # lavender highlight
-  local T_ROSE='\033[38;5;211m'       # rose for warnings
-  local T_DIM='\033[2m'
-  local T_BOLD='\033[1m'
-  local T_ITAL='\033[3m'
-  local RESET='\033[0m'
+  local T_BLUE=$'\033[38;5;117m'       # trans blue
+  local T_PINK=$'\033[38;5;218m'       # trans pink
+  local T_WHITE=$'\033[0;97m'          # bright white
+  local T_HOT=$'\033[38;5;205m'        # hot pink accent
+  local T_SKY=$'\033[38;5;153m'        # sky blue accent
+  local T_LILAC=$'\033[38;5;183m'      # lavender highlight
+  local T_ROSE=$'\033[38;5;211m'       # rose for warnings
+  local T_DIM=$'\033[2m'
+  local T_BOLD=$'\033[1m'
+  local T_ITAL=$'\033[3m'
+  local RESET=$'\033[0m'
 
   # ── constants ────────────────────────────────────────────
   local W=76
@@ -1208,44 +1208,15 @@ cmd_mesh_watch() {
   local security_log="${LOG_SECURITY:-${LOG_DIR:-/var/log/ldown}/security.log}"
   local ping_cycle=0
   local czar_reachable=false
-  local last_log_content=""
-  local total_log_lines=0
-  local first_draw=true
-  local last_ui_lines=0  # track how many lines we drew last cycle
-  local view="mesh"       # "mesh" or "logs"
 
-  # peer count for fixed UI sizing
-  local peer_count=${#PEER_NAMES[@]}
-  # UI_LINES = title + trans_grad + sep + 2 header + peer_count peers + 1 sep + 1 sys header + 4 sys lines + 1 sep + 1 footer + 1 sep + 1 keyboard + 1 sep
-  local UI_LINES=$(( 20 + peer_count ))
-
-  # ── helper: trans gradient separator ─────────────────────
-  _gradient_sep() {
-    local stripe="" c
-    local -a tc=("${T_BLUE}" "${T_BLUE}" "${T_SKY}" "${T_PINK}" "${T_PINK}" "${T_HOT}" "${T_WHITE}" "${T_WHITE}" "${T_HOT}" "${T_PINK}" "${T_PINK}" "${T_SKY}" "${T_BLUE}" "${T_BLUE}")
-    local tc_len=${#tc[@]}
-    for ((c=0; c<W; c++)); do
-      stripe+="${tc[$(( c % tc_len ))]}━"
-    done
-    printf '\033[K  %b%b\n' "${stripe}" "${RESET}"
-  }
-
-  # plain colored separator
+  # ── trans gradient separator ────────────────────────────
   _sep() {
-    local color="${1:-${T_SKY}}"
-    printf '\033[K  %b%b%b\n' "${color}" "$(printf '─%.0s' $(seq 1 ${W}))" "${RESET}"
-  }
-
-  # trans gradient separator using colored dashes
-  _trans_gradient_sep() {
-    local seg=14
-    printf '\033[K  '
-    printf '\033[38;5;153m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
-    printf '\033[38;5;218m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
-    printf '\033[0;97m%s'     "$(printf '─%.0s' $(seq 1 ${seg}))"
-    printf '\033[38;5;218m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
-    printf '\033[38;5;153m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
-    printf '\033[0m\n'
+    printf '\033[K  %s%s%s%s%s\n' \
+      "${T_BLUE}$(printf '%0.s─' {1..14})${RESET}" \
+      "${T_PINK}$(printf '%0.s─' {1..14})${RESET}" \
+      "${T_WHITE}$(printf '%0.s─' {1..14})${RESET}" \
+      "${T_PINK}$(printf '%0.s─' {1..14})${RESET}" \
+      "${T_BLUE}$(printf '%0.s─' {1..14})${RESET}"
   }
 
   # line printer: erase to EOL then print indented colored content
@@ -1282,116 +1253,54 @@ cmd_mesh_watch() {
     case "$1" in
       CALM)      printf '%s' "${T_BLUE}" ;;
       ALERT)     printf '%s' "${T_ROSE}" ;;
-      REPAIR)    printf '%s' "${T_HOT}" ;;
-      PARTITION) printf '%s' "${T_HOT}" ;;
+      REPAIR)    printf '%s' "${T_PINK}" ;;
+      PARTITION) printf '%s' "${T_PINK}" ;;
       *)         printf '%s' "${T_WHITE}" ;;
     esac
   }
 
-  # ── log view renderer ───────────────────────────────────
-  _draw_log_view() {
-    local log_lines
-    log_lines=$(grep -v "PING\|PONG\|Ncat:\|Address already" \
-      "${listener_log}" 2>/dev/null | tail -30 | \
-      sed 's/\[.*T\([0-9:]*\)\]/[\1]/')
-
-    if [[ "${first_draw}" == "true" ]]; then
-      printf '\033[2J\033[H'
-      first_draw=false
-      last_ui_lines=0
-    else
-      # Move to top and redraw
-      if (( last_ui_lines > 0 )); then
-        printf '\033[%dA' "${last_ui_lines}"
-      fi
-    fi
-
-    local ui_lines_this_cycle=0
-
-    # fixed header for log view
-    printf '\033[K'
-    printf '  %b%b ✦ ldown v%s — LIVE LOGS  %b%s%b\n' \
-      "${T_PINK}${T_BOLD}" "${RESET}" \
-      "${LDOWN_VERSION:-0.1.0}" \
-      "${T_WHITE}" "$(date '+%H:%M:%S')" "${RESET}"
-    ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-
-    # trans gradient separator
-    printf '\033[K  '
-    printf '\033[38;5;153m%s' "$(printf '─%.0s' $(seq 1 14))"
-    printf '\033[38;5;218m%s' "$(printf '─%.0s' $(seq 1 14))"
-    printf '\033[0;97m%s'     "$(printf '─%.0s' $(seq 1 14))"
-    printf '\033[38;5;218m%s' "$(printf '─%.0s' $(seq 1 14))"
-    printf '\033[38;5;153m%s' "$(printf '─%.0s' $(seq 1 14))"
-    printf '\033[0m\n'
-    ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-
-    # metadata line
-    printf '\033[K  %b  listener: %s   sync: %s%b\n' \
-      "${T_DIM}" "${listener_log}" "${sync_log}" "${RESET}"
-    ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-
-    printf '\033[K\n'
-    ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-
-    # log lines — last 30, color coded
-    local line_count=0
-    while IFS= read -r log_line; do
-      [[ -z "${log_line}" ]] && continue
-      printf '\033[K'
-      local lcolor="${T_WHITE}"
-      [[ "${log_line}" == *"SECURITY"* ]]  && lcolor="${T_HOT}${T_BOLD}"
-      [[ "${log_line}" == *"[WARN]"* ]]    && lcolor="${T_ROSE}"
-      [[ "${log_line}" == *"[DEBUG]"* ]]   && lcolor="${T_DIM}"
-      [[ "${log_line}" == *"[INFO]"* ]]    && lcolor="${T_WHITE}"
-      [[ "${log_line}" == *"[HEAL]"* ]]    && lcolor="${T_SKY}"
-      [[ "${log_line}" == *"[FEVER]"* ]]   && lcolor="${T_HOT}${T_BOLD}"
-      [[ "${log_line}" == *"[SYNC]"* ]]    && lcolor="${T_LILAC}"
-      printf "  %b%s%b\n" "${lcolor}" "${log_line}" "${RESET}"
-      line_count=$(( line_count + 1 ))
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-    done <<< "${log_lines}"
-
-    # fill remaining lines so old content is cleared
-    local term_rows
-    term_rows=$(stty size 2>/dev/null | cut -d' ' -f1)
-    term_rows=${term_rows:-40}
-    local remaining=$(( term_rows - ui_lines_this_cycle - 5 ))
-    local r
-    for (( r=0; r<remaining && r<30; r++ )); do
-      printf '\033[K\n'
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-    done
-
-    # footer
-    printf '\033[K\n'
-    ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-
-    printf '\033[K  %b──────────────────────────────────────────────────────%b\n' \
-      "${T_PINK}" "${RESET}"
-    ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-
-    printf '\033[K  %b[l]${RESET} %bback to mesh watch  %b[q]${RESET} %bquit  %b%bCtrl+C%b to exit%b\n' \
-      "${T_SKY}" "${T_DIM}" "${T_SKY}" "${T_DIM}" "${T_DIM}" "${RESET}" "${T_DIM}" "${RESET}"
-    ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-
-    last_ui_lines="${ui_lines_this_cycle}"
-  }
-
   # ── terminal setup ──────────────────────────────────────
-  printf '\033[?25l'
+  # capture stty state before any changes so trap can always restore it
+  local old_stty
+  old_stty=$(stty -g 2>/dev/null || true)
+
+  # enter alternate screen buffer like Star Wars/vim/htop
+  printf '\033[?1049h'
+  printf '\033[2J\033[H'  # full clear once on entry
+  printf '\033[?25l'      # hide cursor
 
   _watch_cleanup() {
-    printf '\033[?25h'
-    printf '\033[0m'
-    printf '\n'
+    [[ -n "${old_stty}" ]] && stty "${old_stty}" 2>/dev/null || true
+    printf '\033[?1049l'  # leave alternate screen, original returns
+    printf '\033[?25h'    # show cursor
+    printf '\033[0m'      # reset colors
     exit 0
   }
   trap _watch_cleanup EXIT INT TERM
 
+  # raw mode: no echo, no line buffering — single-key input without Enter
+  stty -echo -icanon min 0 time 0
+
+  # ── data cache — initialized before loop, refreshed every 2s ──────────
+  local data_cycle=0
+  local sync_mode="CALM" fever="false" last_cycle=""
+  local mcolor; mcolor=$(_mode_color "CALM")
+  local sync_interval_hint="30s"
+  local last_sync_str="unknown"
+  local listener_pid="" listener_str="${T_DIM}checking...${RESET}"
+  local sync_pid="" sync_str="${T_DIM}checking...${RESET}"
+  local iface_str="${T_LILAC}✗ down${RESET}" iface_up=false
+  local key_count=0 key_expected=$(( ${#PEER_NAMES[@]} + 1 )) key_str="—"
+  local czar_key_str="${T_DIM}checking...${RESET}"
+  local wg_dump=""
+  local total_rx=0 total_tx=0
+  local total_rx_str="—" total_tx_str="—"
+  local fever_str="${T_BLUE}no fever${RESET}"
+  local new_logs=""
+
   # ── main refresh loop ───────────────────────────────────
   while true; do
-    # ── collect ALL data before drawing ──────────────────
+    # ── always: cheap per-cycle updates ──────────────────
     local spin="${SPINNER_COLORS[$spinner_idx]}${SPINNER_FRAMES[$spinner_idx]}${RESET}"
     spinner_idx=$(( (spinner_idx + 1) % 4 ))
 
@@ -1403,33 +1312,99 @@ cmd_mesh_watch() {
     local role="peer"
     [[ "${MY_IS_CZAR:-false}" == "true" ]] && role="czar"
 
-    # sync state
-    local sync_mode="CALM"
-    local fever="false"
-    local last_cycle=""
-    if [[ -f "${sync_state_file}" ]]; then
-      sync_mode=$(grep "^MODE=" "${sync_state_file}" 2>/dev/null | cut -d= -f2)
-      fever=$(grep "^FEVER=" "${sync_state_file}" 2>/dev/null | cut -d= -f2)
-      last_cycle=$(grep "^LAST_CYCLE=" "${sync_state_file}" 2>/dev/null | cut -d= -f2)
-      [[ -z "${sync_mode}" ]] && sync_mode="CALM"
-      [[ -z "${fever}" ]] && fever="false"
-    fi
-    local mcolor; mcolor=$(_mode_color "${sync_mode}")
+    # ── data refresh — every 4 cycles (2s) ───────────────
+    data_cycle=$(( (data_cycle + 1) % 4 ))
+    if (( data_cycle == 0 )); then
+      # sync state
+      sync_mode="CALM"; fever="false"; last_cycle=""
+      if [[ -f "${sync_state_file}" ]]; then
+        sync_mode=$(grep "^MODE=" "${sync_state_file}" 2>/dev/null | cut -d= -f2)
+        fever=$(grep "^FEVER=" "${sync_state_file}" 2>/dev/null | cut -d= -f2)
+        last_cycle=$(grep "^LAST_CYCLE=" "${sync_state_file}" 2>/dev/null | cut -d= -f2)
+        [[ -z "${sync_mode}" ]] && sync_mode="CALM"
+        [[ -z "${fever}" ]] && fever="false"
+      fi
+      mcolor=$(_mode_color "${sync_mode}")
 
-    # sync interval hint
-    local sync_interval_hint="30s"
-    case "${sync_mode}" in
-      ALERT)            sync_interval_hint="15s" ;;
-      REPAIR|PARTITION) sync_interval_hint="5s" ;;
-    esac
+      # sync interval hint
+      sync_interval_hint="30s"
+      case "${sync_mode}" in
+        ALERT)            sync_interval_hint="15s" ;;
+        REPAIR|PARTITION) sync_interval_hint="5s" ;;
+      esac
 
-    # last sync age
-    local last_sync_str="unknown"
-    if [[ -n "${last_cycle}" && "${last_cycle}" =~ ^[0-9]+$ ]]; then
-      local sync_age=$(( now_ts - last_cycle ))
-      last_sync_str="${sync_age}s ago"
-    elif kill -0 "$(cat "${sync_pid_file}" 2>/dev/null)" 2>/dev/null; then
-      last_sync_str="loop active"
+      # last sync age
+      last_sync_str="unknown"
+      if [[ -n "${last_cycle}" && "${last_cycle}" =~ ^[0-9]+$ ]]; then
+        local sync_age=$(( now_ts - last_cycle ))
+        last_sync_str="${sync_age}s ago"
+      elif kill -0 "$(cat "${sync_pid_file}" 2>/dev/null)" 2>/dev/null; then
+        last_sync_str="loop active"
+      fi
+
+      # listener status
+      listener_str="${T_LILAC}✗ stopped${RESET}"
+      if [[ -f "${listener_pid_file}" ]]; then
+        read -r listener_pid < "${listener_pid_file}" 2>/dev/null
+        if kill -0 "${listener_pid}" 2>/dev/null; then
+          listener_str="${T_BLUE}✓ running${RESET} ${T_DIM}pid ${listener_pid}${RESET}"
+        fi
+      fi
+
+      # sync loop status
+      sync_str="${T_LILAC}✗ stopped${RESET}"
+      if [[ -f "${sync_pid_file}" ]]; then
+        read -r sync_pid < "${sync_pid_file}" 2>/dev/null
+        if kill -0 "${sync_pid}" 2>/dev/null; then
+          sync_str="${T_BLUE}✓ running${RESET} ${T_DIM}pid ${sync_pid}${RESET}"
+        fi
+      fi
+
+      # interface state
+      iface_str="${T_LILAC}✗ down${RESET}"; iface_up=false
+      if ip link show "${iface}" &>/dev/null 2>&1; then
+        iface_up=true
+        iface_str="${T_BLUE}✓ up${RESET} ${T_WHITE}${MY_TUNNEL_IP:-?}/24${RESET}"
+      fi
+
+      # node signing key count
+      key_count=$(find "${KEY_DIR}" -name "*-node.pub" 2>/dev/null | wc -l | tr -d ' ')
+      key_expected=$(( ${#PEER_NAMES[@]} + 1 ))
+      key_str="${key_count}/${key_expected} stored"
+
+      # czar pubkey status
+      czar_key_str="${T_LILAC}✗ missing${RESET}"
+      [[ -f "${KEY_DIR}/czar-control.pub" ]] && czar_key_str="${T_BLUE}✓ verified${RESET}"
+
+      # wg dump — parse once
+      wg_dump=""
+      ${iface_up} && wg_dump=$(wg show "${iface}" dump 2>/dev/null)
+
+      # total rx/tx
+      total_rx=0; total_tx=0
+      if [[ -n "${wg_dump}" ]]; then
+        while IFS=$'\t' read -r f1 f2 f3 f4 f5 f6 f7 f8; do
+          [[ "${f1}" =~ ^[a-zA-Z0-9+/=]{43,44}$ ]] || continue
+          [[ "${f6}" =~ ^[0-9]+$ ]] && total_rx=$(( total_rx + f6 ))
+          [[ "${f7}" =~ ^[0-9]+$ ]] && total_tx=$(( total_tx + f7 ))
+        done <<< "${wg_dump}"
+      fi
+      total_rx_str=$(_fmt_bytes "${total_rx}")
+      total_tx_str=$(_fmt_bytes "${total_tx}")
+
+      # fever status
+      fever_str="${T_BLUE}no fever${RESET}"
+      [[ "${fever}" == "true" ]] && fever_str="${T_PINK}${T_BOLD}⚠ FEVER ACTIVE${RESET}"
+
+      # new log events
+      new_logs=""
+      if [[ -f "${listener_log}" ]]; then
+        new_logs=$(grep -v "PING\|PONG\|Ncat:\|Address already" \
+          "${listener_log}" 2>/dev/null | \
+          grep "\[INFO\]\|\[WARN\]\|\[DEBUG\]\|SECURITY" | \
+          tail -10 | \
+          sed 's/\[.*T\([0-9:]*\)\]/[\1]/')
+      fi
     fi
 
     # czar reachability — only every 5th cycle
@@ -1445,275 +1420,176 @@ cmd_mesh_watch() {
     if ${czar_reachable}; then
       czar_str="${T_BLUE}✓ reachable${RESET}"
     else
-      czar_str="${T_HOT}✗ unreachable${RESET}"
+      czar_str="${T_PINK}✗ unreachable${RESET}"
     fi
-
-    # listener status
-    local listener_pid=""
-    local listener_str="${T_HOT}✗ stopped${RESET}"
-    if [[ -f "${listener_pid_file}" ]]; then
-      read -r listener_pid < "${listener_pid_file}" 2>/dev/null
-      if kill -0 "${listener_pid}" 2>/dev/null; then
-        listener_str="${T_BLUE}✓ running${RESET} ${T_DIM}pid ${listener_pid}${RESET}"
-      fi
-    fi
-
-    # sync loop status
-    local sync_pid=""
-    local sync_str="${T_HOT}✗ stopped${RESET}"
-    if [[ -f "${sync_pid_file}" ]]; then
-      read -r sync_pid < "${sync_pid_file}" 2>/dev/null
-      if kill -0 "${sync_pid}" 2>/dev/null; then
-        sync_str="${T_BLUE}✓ running${RESET} ${T_DIM}pid ${sync_pid}${RESET}"
-      fi
-    fi
-
-    # interface state
-    local iface_str="${T_HOT}✗ down${RESET}"
-    local iface_up=false
-    if ip link show "${iface}" &>/dev/null 2>&1; then
-      iface_up=true
-      iface_str="${T_BLUE}✓ up${RESET} ${T_WHITE}${MY_TUNNEL_IP:-?}/24${RESET}"
-    fi
-
-    # node signing key count
-    local key_count
-    key_count=$(find "${KEY_DIR}" -name "*-node.pub" 2>/dev/null | wc -l | tr -d ' ')
-    local key_expected=$(( ${#PEER_NAMES[@]} + 1 ))
-    local key_str="${key_count}/${key_expected} stored"
-
-    # czar pubkey status
-    local czar_key_str="${T_HOT}✗ missing${RESET}"
-    [[ -f "${KEY_DIR}/czar-control.pub" ]] && czar_key_str="${T_BLUE}✓ verified${RESET}"
-
-    # wg dump — parse once
-    local wg_dump=""
-    ${iface_up} && wg_dump=$(wg show "${iface}" dump 2>/dev/null)
-
-    # total rx/tx
-    local total_rx=0 total_tx=0
-    if [[ -n "${wg_dump}" ]]; then
-      while IFS=$'\t' read -r f1 f2 f3 f4 f5 f6 f7 f8; do
-        [[ "${f1}" =~ ^[a-zA-Z0-9+/=]{43,44}$ ]] || continue
-        [[ "${f6}" =~ ^[0-9]+$ ]] && total_rx=$(( total_rx + f6 ))
-        [[ "${f7}" =~ ^[0-9]+$ ]] && total_tx=$(( total_tx + f7 ))
-      done <<< "${wg_dump}"
-    fi
-    local total_rx_str; total_rx_str=$(_fmt_bytes "${total_rx}")
-    local total_tx_str; total_tx_str=$(_fmt_bytes "${total_tx}")
 
     local healthy_count=0
 
-    # fever status
-    local fever_str="${T_BLUE}no fever${RESET}"
-    [[ "${fever}" == "true" ]] && fever_str="${T_HOT}${T_BOLD}⚠ FEVER ACTIVE${RESET}"
+    # ── MESH VIEW RENDERING ──────────────────────────────
+    # pipe subshell output through cat — C-level buffering, one write per cycle
+    (
+        printf '\033[H'
 
-    # new log events — collect for comparison after drawing
-    local new_logs=""
-    if [[ -f "${listener_log}" ]]; then
-      new_logs=$(grep -v "PING\|PONG\|Ncat:\|Address already" \
-        "${listener_log}" 2>/dev/null | \
-        grep "\[INFO\]\|\[WARN\]\|\[DEBUG\]\|SECURITY" | \
-        tail -10 | \
-        sed 's/\[.*T\([0-9:]*\)\]/[\1]/')
-    fi
+        printf '\033[K  %s%s ✦ ldown v%s — MESH WATCH  %s%s%s\n' \
+          "${T_PINK}${T_BOLD}" "${RESET}" "${LDOWN_VERSION:-0.1.0}" \
+          "${T_DIM}" "${now_str}" "${RESET}"
 
-    # ── render based on view ─────────────────────────────
-    if [[ "${view}" == "mesh" ]]; then
-      # ── MESH VIEW RENDERING ──────────────────────────
+        _sep
 
-      # handle first draw vs. subsequent draws
-      if [[ "${first_draw}" == "true" ]]; then
-        # First draw: print normally, let lines flow to bottom
-        printf '\033[2J\033[H'  # clear screen and home cursor only on full redraw
-        first_draw=false
-        last_ui_lines=0
-      else
-        # Subsequent draws: move cursor up to start of UI and redraw in place
-        if (( last_ui_lines > 0 )); then
-          printf '\033[%dA' "${last_ui_lines}"
-        fi
-      fi
+        printf '\033[K  %s%snode:%s %s%s%s%s  %s•%s  role: %s%s%s  %s•%s  tunnel: %s%s%s  %s•%s  uptime: %s%s%s\n' \
+          "${T_WHITE}" "" "${RESET}" "${T_PINK}${T_BOLD}" "${RESET}" "${MY_NAME:-?}" "${RESET}" \
+          "${T_DIM}" "${RESET}" "${T_SKY}" "${role}" "${RESET}" "${T_DIM}" "${RESET}" \
+          "${T_WHITE}" "${MY_TUNNEL_IP:-?}" "${RESET}" "${T_DIM}" "${RESET}" \
+          "${T_LILAC}" "${uptime_str}" "${RESET}"
 
-      # track lines printed this cycle
-      local ui_lines_this_cycle=0
+        printf '\033[K  %s%sczar:%s %s%s%s %s(%s)%s  %s•%s  %s  %s•%s  mode: %s%s%s\n' \
+          "${T_WHITE}" "" "${RESET}" "${T_PINK}" "${CZAR_IP:-?}" "${RESET}" \
+          "${T_DIM}" "${CZAR_TUNNEL_IP:-?}" "${RESET}" "${T_DIM}" "${RESET}" \
+          "${czar_str}" "${T_DIM}" "${RESET}" "${mcolor}" "${sync_mode}" "${RESET}"
 
-      # ── LINE 1: title ────────────────────────────────
-      _wl "${T_PINK}${T_BOLD}✦ ldown v${LDOWN_VERSION:-0.1.0}${RESET} ${T_LILAC}${T_ITAL}— MESH WATCH${RESET}  ${T_DIM}${now_str}${RESET}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
+        _sep
 
-      # ── LINE 2: trans gradient separator ─────────────
-      _trans_gradient_sep
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
+        printf '\033[K  %s%s✦ PEERS%s\n' "${T_BOLD}${T_PINK}" "" "${RESET}"
 
-      # ── LINE 3: separator ────────────────────────────
-      _sep "${T_PINK}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
+        printf '\033[K  %s%-8s %-12s %-22s %-9s%-6s %-11s%s\n' "${T_DIM}" \
+          'NAME' 'TUNNEL IP' 'ENDPOINT' 'STATUS' 'AGE' 'IN / OUT' "${RESET}"
 
-      # ── LINE 4: node info ────────────────────────────
-      _wl "${T_WHITE}node: ${T_PINK}${T_BOLD}${MY_NAME:-?}${RESET}  ${T_DIM}•${RESET}  role: ${T_SKY}${role}${RESET}  ${T_DIM}•${RESET}  tunnel: ${T_WHITE}${MY_TUNNEL_IP:-?}${RESET}  ${T_DIM}•${RESET}  uptime: ${T_LILAC}${uptime_str}${RESET}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
+        # peer rows
+        local row_alt=0
+        for i in "${!PEER_NAMES[@]}"; do
+          local pname="${PEER_NAMES[$i]}"
+          local ptunnel="${PEER_TUNNEL_IPS[$i]}"
+          local pip="${PEER_IPS[$i]}"
+          local pport="${PEER_PORTS[$i]:-${WG_PORT:-51820}}"
 
-      # ── LINE 5: czar info ────────────────────────────
-      _wl "${T_WHITE}czar: ${T_PINK}${CZAR_IP:-?}${RESET} ${T_DIM}(${CZAR_TUNNEL_IP:-?})${RESET}  ${T_DIM}•${RESET}  ${czar_str}  ${T_DIM}•${RESET}  mode: ${mcolor}${sync_mode}${RESET}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-
-      # ── LINE 6: separator ────────────────────────────
-      _sep "${T_SKY}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-
-      # ── LINE 7: peers header ─────────────────────────
-      _wl "${T_BOLD}${T_PINK}✦ PEERS${RESET}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-
-      # ── LINE 8: column headers ───────────────────────
-      _wl "${T_DIM}$(printf '%-10s %-14s %-26s %-10s %-7s %s' \
-        'NAME' 'TUNNEL IP' 'ENDPOINT' 'STATUS' 'H/SHAKE' 'RX / TX')${RESET}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-
-      # ── LINES 9+: peer rows ──────────────────────────
-      local row_alt=0
-      for i in $(_mesh_sorted_peer_indices); do
-        local pname="${PEER_NAMES[$i]}"
-        local ptunnel="${PEER_TUNNEL_IPS[$i]}"
-        local pip="${PEER_IPS[$i]}"
-        local pport="${PEER_PORTS[$i]:-${WG_PORT:-51820}}"
-
-        local peer_line_data=""
-        if [[ -n "${wg_dump}" ]]; then
-          peer_line_data=$(awk -F'\t' -v ip="${ptunnel}" '$4 ~ ip {print; exit}' <<< "${wg_dump}")
-        fi
-
-        local peer_ep="" peer_hs=0 peer_rx=0 peer_tx=0
-        if [[ -n "${peer_line_data}" ]]; then
-          peer_ep=$(cut -f3 <<< "${peer_line_data}")
-          peer_hs=$(cut -f5 <<< "${peer_line_data}")
-          peer_rx=$(cut -f6 <<< "${peer_line_data}")
-          peer_tx=$(cut -f7 <<< "${peer_line_data}")
-          [[ "${peer_ep}" == "(none)" ]] && peer_ep=""
-          [[ ! "${peer_hs}" =~ ^[0-9]+$ ]] && peer_hs=0
-          [[ ! "${peer_rx}" =~ ^[0-9]+$ ]] && peer_rx=0
-          [[ ! "${peer_tx}" =~ ^[0-9]+$ ]] && peer_tx=0
-        fi
-
-        local ep_display="${peer_ep:-${pip}:${pport}}"
-
-        local row_color status_str hs_str
-        if ! ${iface_up} || [[ -z "${peer_line_data}" ]]; then
-          row_color="${T_DIM}"
-          status_str="✗ down"
-          hs_str="—"
-          peer_rx=0
-          peer_tx=0
-        elif [[ "${peer_hs}" == "0" ]]; then
-          row_color="${T_WHITE}"
-          status_str="${spin} wait"
-          hs_str="—"
-        else
-          local hs_age=$(( now_ts - peer_hs ))
-          if (( hs_age < 30 )); then
-            row_color="${T_BLUE}"
-            status_str="✓ up"
-            hs_str="${hs_age}s"
-            healthy_count=$(( healthy_count + 1 ))
-          elif (( hs_age < 120 )); then
-            row_color="${T_PINK}"
-            status_str="~ stale"
-            hs_str="${hs_age}s"
-          else
-            row_color="${T_DIM}"
-            status_str="✗ down"
-            hs_str="${hs_age}s"
+          local peer_line_data=""
+          if [[ -n "${wg_dump}" ]]; then
+            peer_line_data=$(awk -F'\t' -v ip="${ptunnel}" '$4 ~ ip {print; exit}' <<< "${wg_dump}")
           fi
+
+          local peer_ep="" peer_hs=0 peer_rx=0 peer_tx=0
+          if [[ -n "${peer_line_data}" ]]; then
+            peer_ep=$(cut -f3 <<< "${peer_line_data}")
+            peer_hs=$(cut -f5 <<< "${peer_line_data}")
+            peer_rx=$(cut -f6 <<< "${peer_line_data}")
+            peer_tx=$(cut -f7 <<< "${peer_line_data}")
+            [[ "${peer_ep}" == "(none)" ]] && peer_ep=""
+            [[ ! "${peer_hs}" =~ ^[0-9]+$ ]] && peer_hs=0
+            [[ ! "${peer_rx}" =~ ^[0-9]+$ ]] && peer_rx=0
+            [[ ! "${peer_tx}" =~ ^[0-9]+$ ]] && peer_tx=0
+          fi
+
+          local ep_display="${peer_ep:-${pip}:${pport}}"
+
+          local status_display row_color hs_str
+          if ! ${iface_up} || [[ -z "${peer_line_data}" ]]; then
+            status_display="${T_LILAC}✗ down   ${RESET}"
+            row_color="${T_LILAC}"
+            hs_str="—"
+            peer_rx=0
+            peer_tx=0
+          elif [[ "${peer_hs}" == "0" ]]; then
+            status_display="${T_WHITE}${spin} wait  ${RESET}"
+            row_color="${T_WHITE}"
+            hs_str="—"
+          else
+            local hs_age_int=$(( now_ts - peer_hs ))
+            hs_str="${hs_age_int}s"
+            if (( hs_age_int < 150 )); then
+              status_display="${T_BLUE}✓ up     ${RESET}"
+              row_color="${T_BLUE}"
+              healthy_count=$(( healthy_count + 1 ))
+            elif (( hs_age_int < 190 )); then
+              status_display="${T_SKY}~ stale  ${RESET}"
+              row_color="${T_SKY}"
+            else
+              status_display="${T_LILAC}✗ down   ${RESET}"
+              row_color="${T_LILAC}"
+            fi
+          fi
+
+          local prx_str; prx_str=$(_fmt_bytes "${peer_rx}")
+          local ptx_str; ptx_str=$(_fmt_bytes "${peer_tx}")
+          local rx_tx_str="${prx_str} / ${ptx_str}"
+
+          local row_tint=""
+          (( row_alt % 2 == 1 )) && row_tint="${T_DIM}"
+          row_alt=$(( row_alt + 1 ))
+
+          printf '\033[K  %b%-8s %-12s %-22s %s%-6s %-11s%b\n' \
+            "${row_tint}${row_color}" \
+            "${pname}" "${ptunnel}" "${ep_display}" \
+            "${status_display}" \
+            "${hs_str}" \
+            "${rx_tx_str}" \
+            "${RESET}"
+        done
+
+        _sep
+
+        printf '\033[K  %s%s✦ SYSTEM%s\n' "${T_BOLD}${T_PINK}" "" "${RESET}"
+
+        # build plain text values for width-correct column alignment
+        local listener_plain="✗ stopped"
+        if [[ -n "${listener_pid}" ]] && kill -0 "${listener_pid}" 2>/dev/null; then
+          listener_plain="✓ running   pid ${listener_pid}"
         fi
+        local iface_plain="✗ down"
+        ${iface_up} && iface_plain="✓ up  ${MY_TUNNEL_IP:-?}/24"
+        local sync_plain="✗ stopped"
+        if [[ -n "${sync_pid}" ]] && kill -0 "${sync_pid}" 2>/dev/null; then
+          sync_plain="✓ running   pid ${sync_pid}"
+        fi
+        local czar_key_plain="✗ missing"
+        [[ -f "${KEY_DIR}/czar-control.pub" ]] && czar_key_plain="✓ verified"
 
-        local prx_str; prx_str=$(_fmt_bytes "${peer_rx}")
-        local ptx_str; ptx_str=$(_fmt_bytes "${peer_tx}")
+        # line 1: listener / interface
+        printf '\033[K  '
+        printf '%b%-10s%b' "${T_BLUE}" "listener" "${RESET}"
+        printf '%-28s' "${listener_plain}"
+        printf '%b%-10s%b' "${T_BLUE}" "interface" "${RESET}"
+        printf '%s\n' "${iface_plain}"
 
-        local row_tint=""
-        (( row_alt % 2 == 1 )) && row_tint="${T_DIM}"
-        row_alt=$(( row_alt + 1 ))
+        # line 2: sync / czar key
+        printf '\033[K  '
+        printf '%b%-10s%b' "${T_BLUE}" "sync" "${RESET}"
+        printf '%-28s' "${sync_plain}"
+        printf '%b%-10s%b' "${T_BLUE}" "czar key" "${RESET}"
+        printf '%s\n' "${czar_key_plain}"
 
-        _wl "${row_tint}${row_color}$(printf '%-10s %-14s %-26s %-10s %-7s %s / %s' \
-          "${pname}" "${ptunnel}" "${ep_display}" \
-          "${status_str}" "${hs_str}" \
-          "${prx_str}" "${ptx_str}")${RESET}"
-        ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-      done
+        # line 3: keys / interval
+        printf '\033[K  '
+        printf '%b%-10s%b' "${T_BLUE}" "keys" "${RESET}"
+        printf '%-28s' "${key_str}"
+        printf '%b%-10s%b' "${T_BLUE}" "interval" "${RESET}"
+        printf '%s\n' "${sync_interval_hint}"
 
-      # ── separator after peers ────────────────────────
-      _sep "${T_WHITE}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
+        # line 4: traffic (full width)
+        printf '\033[K  '
+        printf '%b%-10s%b' "${T_BLUE}" "traffic" "${RESET}"
+        printf '%b↓ %s rx%b   %b↑ %s tx%b\n' \
+          "${T_BLUE}" "${total_rx_str}" "${RESET}" \
+          "${T_PINK}" "${total_tx_str}" "${RESET}"
 
-      # ── SYSTEM section (2-column layout) ─────────────
-      _wl "${T_BOLD}${T_PINK}✦ SYSTEM${RESET}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-      
-      local sys_left_width=42
-      _wl "$(printf '%-42s %s' "${T_WHITE}listener ${listener_str}" "${T_WHITE}interface ${iface_str}")${RESET}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-      
-      _wl "$(printf '%-42s %s' "${T_WHITE}sync ${sync_str}" "${T_WHITE}interval  ${T_LILAC}${sync_interval_hint}${RESET} (${mcolor}${sync_mode}${RESET})")${RESET}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-      
-      _wl "$(printf '%-42s %s' "${T_WHITE}keys ${T_LILAC}${key_str}${RESET}" "${T_WHITE}czar key ${czar_key_str}")${RESET}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-      
-      _wl "${T_WHITE}traffic ${T_BLUE}↓ ${total_rx_str} rx${RESET}  ${T_PINK}↑ ${total_tx_str} tx${RESET}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
+        _sep
 
-      # ── separator ────────────────────────────────────────
-      _sep "${T_PINK}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
+        printf '\033[K  %s●%s %s%s%s  %s•%s  %s  %s•%s  %s%d/%d healthy%s  %s•%s  last sync: %s%s%s\n' \
+          "${mcolor}" "${RESET}" "${mcolor}" "${sync_mode}" "${RESET}" \
+          "${T_DIM}" "${RESET}" "${fever_str}" "${T_DIM}" "${RESET}" \
+          "${T_WHITE}" "${healthy_count}" "${#PEER_NAMES[@]}" "${RESET}" \
+          "${T_DIM}" "${RESET}" "${T_DIM}" "${last_sync_str}" "${RESET}"
 
-      # ── footer ───────────────────────────────────────────
-      _wl "${mcolor}●${RESET} ${mcolor}${sync_mode}${RESET}  ${T_DIM}•${RESET}  ${fever_str}  ${T_DIM}•${RESET}  ${T_WHITE}${healthy_count}/${#PEER_NAMES[@]} healthy${RESET}  ${T_DIM}•${RESET}  last sync: ${T_DIM}${last_sync_str}${RESET}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
+        _sep
 
-      # ── separator ────────────────────────────────────────
-      _sep "${T_SKY}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
+        printf '\033[K  %s[q]%s %squit%s  %s[l]%s %slive logs%s  %sCtrl+C%s\n' \
+          "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+          "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+          "${T_DIM}" "${RESET}"
 
-      # ── keyboard hint ────────────────────────────────────
-      printf '\033[K  %b\n' "${T_SKY}[q]${RESET} ${T_DIM}quit${RESET}  ${T_SKY}[l]${RESET} ${T_DIM}live logs${RESET}  ${T_DIM}Ctrl+C${RESET}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
+        _sep
 
-      # ── log separator (last fixed UI line) ─────────────
-      _sep "${T_DIM}"
-      ui_lines_this_cycle=$(( ui_lines_this_cycle + 1 ))
-
-      last_ui_lines="${ui_lines_this_cycle}"
-
-      # ── skip cursor past previously printed logs ──────────
-      (( total_log_lines > 0 )) && printf '\033[%dB' "${total_log_lines}"
-
-      # ── append only NEW log lines (no \033[K here) ───────
-      if [[ "${new_logs}" != "${last_log_content}" && -n "${new_logs}" ]]; then
-        local new_lines
-        new_lines=$(comm -13 \
-          <(printf '%s\n' "${last_log_content}" | sort) \
-          <(printf '%s\n' "${new_logs}" | sort))
-
-        while IFS= read -r log_line; do
-          [[ -z "${log_line}" ]] && continue
-          local lcolor="${T_WHITE}"
-          [[ "${log_line}" == *"SECURITY"* ]]  && lcolor="${T_HOT}${T_BOLD}"
-          [[ "${log_line}" == *"[WARN]"* ]]    && lcolor="${T_ROSE}"
-          [[ "${log_line}" == *"[DEBUG]"* ]]   && lcolor="${T_DIM}"
-          [[ "${log_line}" == *"[HEAL]"* ]]    && lcolor="${T_SKY}"
-          [[ "${log_line}" == *"[FEVER]"* ]]   && lcolor="${T_HOT}${T_BOLD}"
-          [[ "${log_line}" == *"[SYNC]"* ]]    && lcolor="${T_LILAC}"
-          printf "  %b%s%b\n" "${lcolor}" "${log_line}" "${RESET}"
-          total_log_lines=$(( total_log_lines + 1 ))
-        done <<< "${new_lines}"
-
-        last_log_content="${new_logs}"
-      fi
-
-    else
-      # ── LOG VIEW RENDERING ───────────────────────────
-      _draw_log_view
-    fi
+        printf '\033[J'
+    ) | cat
 
     # keyboard input — non-blocking, 0.5 second timeout
     local key=""
@@ -1723,14 +1599,13 @@ cmd_mesh_watch() {
           break
           ;;
         l|L)
-          if [[ "${view}" == "mesh" ]]; then
-            view="logs"
-            first_draw=true
-            total_log_lines=0   # reset log line count on view switch
-          else
-            view="mesh"
-            first_draw=true
-          fi
+          # exit to log view, re-enter dashboard when it returns
+          printf '\033[?1049l\033[?25h\033[0m\n'
+          [[ -n "${old_stty}" ]] && stty "${old_stty}" 2>/dev/null || true
+          cmd_mesh_watch_logs
+          # re-enter dashboard
+          stty -echo -icanon min 0 time 0
+          printf '\033[?1049h\033[2J\033[H\033[?25l'
           ;;
         r|R)
           if [[ "${MY_IS_CZAR:-false}" != "true" ]]; then
@@ -1754,6 +1629,80 @@ cmd_mesh_watch() {
 
   printf '\033[?25h'
   printf '\033[0m\n'
+}
+
+# =============================================================================
+# cmd_mesh_watch_logs
+# =============================================================================
+# simple scrollable log view with tail -f
+# runs in normal terminal, not alternate buffer
+# Ctrl+C returns to normal terminal (not back to dashboard)
+# =============================================================================
+
+cmd_mesh_watch_logs() {
+  local listener_log="${LOG_LISTENER:-${LOG_DIR:-/var/log/ldown}/listener.log}"
+  local T_BLUE=$'\033[38;5;117m'
+  local T_PINK=$'\033[38;5;218m'
+  local T_WHITE=$'\033[0;97m'
+  local T_SKY=$'\033[38;5;153m'
+  local T_LILAC=$'\033[38;5;183m'
+  local T_DIM=$'\033[2m'
+  local T_BOLD=$'\033[1m'
+  local RESET=$'\033[0m'
+  local seg=14
+
+  local old_stty_logs
+  old_stty_logs=$(stty -g 2>/dev/null || true)
+  stty -echo -icanon min 0 time 0 2>/dev/null || true
+  trap 'stty "${old_stty_logs}" 2>/dev/null; return 0' INT
+
+  printf '\033[38;5;218m  ✦ ldown — LIVE LOGS\033[0m  '
+  printf '\033[2m(last 10 + live • [l] or [q] returns)\033[0m\n'
+  printf '  '
+  printf '\033[38;5;153m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
+  printf '\033[38;5;218m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
+  printf '\033[0;97m%s'     "$(printf '─%.0s' $(seq 1 ${seg}))"
+  printf '\033[38;5;218m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
+  printf '\033[38;5;153m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
+  printf '\033[0m\n'
+  printf '\033[2m  — recent history —\033[0m\n'
+
+  grep -v "PING\|PONG" "${listener_log}" 2>/dev/null | \
+    tail -10 | while IFS= read -r line; do
+      local color="${T_WHITE}"
+      [[ "${line}" == *"SECURITY"* ]] && color="${T_LILAC}"
+      [[ "${line}" == *"[WARN]"* ]]   && color="${T_SKY}"
+      [[ "${line}" == *"[DEBUG]"* ]]  && color="${T_DIM}"
+      [[ "${line}" == *"[INFO]"* ]]   && color="${T_BLUE}"
+      [[ "${line}" == *"[HEAL]"* ]]   && color="${T_SKY}"
+      [[ "${line}" == *"[FEVER]"* ]]  && color="${T_PINK}${T_BOLD}"
+      printf '%s  %s%s\n' "${color}" "${line}" "${RESET}"
+    done
+
+  printf '\033[38;5;218m%s\033[0m\n' \
+    "──────────────────────────────────────────────────────"
+  printf '\033[2m  — live —\033[0m\n'
+
+  tail -f "${listener_log}" 2>/dev/null | \
+    grep --line-buffered -v "PING\|PONG" | \
+    while IFS= read -r line; do
+      local k=""
+      read -r -s -n1 -t0 k 2>/dev/null
+      if [[ "${k}" == "l" || "${k}" == "L" || \
+            "${k}" == "q" || "${k}" == "Q" ]]; then
+        break
+      fi
+      local color="${T_WHITE}"
+      [[ "${line}" == *"SECURITY"* ]] && color="${T_LILAC}"
+      [[ "${line}" == *"[WARN]"* ]]   && color="${T_SKY}"
+      [[ "${line}" == *"[DEBUG]"* ]]  && color="${T_DIM}"
+      [[ "${line}" == *"[INFO]"* ]]   && color="${T_BLUE}"
+      [[ "${line}" == *"[HEAL]"* ]]   && color="${T_SKY}"
+      [[ "${line}" == *"[FEVER]"* ]]  && color="${T_PINK}${T_BOLD}"
+      printf '%s  %s%s\n' "${color}" "${line}" "${RESET}"
+    done
+
+  stty "${old_stty_logs}" 2>/dev/null || true
 }
 
 # =============================================================================
