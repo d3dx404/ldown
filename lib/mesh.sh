@@ -1686,13 +1686,13 @@ cmd_mesh_watch_logs() {
   tail -f "${listener_log}" 2>/dev/null | \
     grep --line-buffered -v "PING\|PONG" | \
     while IFS= read -r line; do
-      local k=""
+      k=""
       read -r -s -n1 -t0 k 2>/dev/null
       if [[ "${k}" == "l" || "${k}" == "L" || \
             "${k}" == "q" || "${k}" == "Q" ]]; then
         break
       fi
-      local color="${T_WHITE}"
+      color="${T_WHITE}"
       [[ "${line}" == *"SECURITY"* ]] && color="${T_LILAC}"
       [[ "${line}" == *"[WARN]"* ]]   && color="${T_SKY}"
       [[ "${line}" == *"[DEBUG]"* ]]  && color="${T_DIM}"
