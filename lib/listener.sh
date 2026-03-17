@@ -252,8 +252,11 @@ verify_msg() {
   local czar_pub="\${KEY_DIR}/czar-control.pub"
   local pubkey_to_use=""
   
-  # try sender's node public key first
-  if [[ -n "\${sender_name}" && -f "\${sender_pub}" ]]; then
+  # czar-sourced messages always verify with czar-control.pub
+  if [[ "\${sender_name}" == "czar" ]]; then
+    pubkey_to_use="\${czar_pub}"
+  # try sender's node public key
+  elif [[ -n "\${sender_name}" && -f "\${sender_pub}" ]]; then
     pubkey_to_use="\${sender_pub}"
   # fall back to czar key for czar-signed messages
   elif [[ -f "\${czar_pub}" ]]; then
@@ -310,7 +313,14 @@ if [[ "\${action}" == "JOIN" || "\${action}" == "LEAVE" ]]; then
     exit 1
   fi
 elif [[ "\${action}" != "PUBKEY" && "\${action}" != "PING" ]]; then
-  sender_name="\${p[2]:-}"
+  if [[ "\${action}" == "PEER_ADD" || \
+        "\${action}" == "PEER_REMOVE" || \
+        "\${action}" == "RECONNECT" || \
+        "\${action}" == "REVIVE" ]]; then
+    sender_name="czar"
+  else
+    sender_name="\${p[2]:-}"
+  fi
   verify_msg "\${sig}" "\${payload}" "\${sender_name}" || {
     _llog "WARN" "sig verify failed for \${action} from \${sender_name} — dropping"
     exit 1
