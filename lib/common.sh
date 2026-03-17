@@ -596,7 +596,7 @@ sign_msg() {
 
 # ── message verification using node Ed25519 keys ────────────
 # usage: verify_msg <signature> <payload> <sender_name>
-# verifies signature using sender's node public key if available, falls back to CLUSTER_TOKEN HMAC
+# verifies signature using sender's node Ed25519 public key
 verify_msg() {
   local received_sig="$1"
   local payload="$2"
