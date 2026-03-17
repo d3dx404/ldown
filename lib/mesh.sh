@@ -560,7 +560,12 @@ cmd_mesh_join() {
   if [[ -f "${csr_file}" ]]; then
     csr_b64="$(base64 -w0 < "${csr_file}")"
   fi
-  local _join_raw="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pubkey} ${node_signing_pub} ${csr_b64}"
+  local ticket=""
+  local ticket_file="/etc/ldown/tickets/${MY_NAME}"
+  if [[ -f "${ticket_file}" ]]; then
+    read -r ticket < "${ticket_file}"
+  fi
+  local _join_raw="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pubkey} ${node_signing_pub} ${csr_b64} ${ticket}"
   local _join_payload
   _join_payload="$(make_payload "${_join_raw}")"
   peer_list="$(printf '%s\n' "$(sign_msg "${_join_payload}") ${_join_payload}" \
@@ -2647,4 +2652,87 @@ cmd_mesh_neighbors() {
   printf '\n'
   info "relay rules: direct preferred — relay fallback — relay→relay forbidden"
   printf '\n'
+}
+
+# =============================================================================
+# cmd_ticket_create
+# =============================================================================
+# czar generates a one-time admission ticket for a specific node
+# usage: ldown mesh ticket create <name>
+# =============================================================================
+cmd_ticket_create() {
+  require_root
+  source_if_exists "${MESH_CONF}"
+  [[ "${MY_IS_CZAR:-false}" == "true" ]] || fatal "only czar can create tickets"
+  local name="${1:-}"
+  [[ -n "${name}" ]] || fatal "usage: ldown mesh ticket create <name>"
+
+  local ticket_dir="/etc/ldown/tickets"
+  mkdir -p "${ticket_dir}" 2>/dev/null || true
+  chmod 700 "${ticket_dir}"
+
+  if [[ -f "${ticket_dir}/${name}" ]]; then
+    warn "ticket already exists for ${name}"
+    confirm "overwrite?" || { info "cancelled"; exit 0; }
+  fi
+
+  local token
+  token="$(head -c32 /dev/urandom | base64 -w0)"
+  printf '%s\n' "${token}" > "${ticket_dir}/${name}"
+  chmod 600 "${ticket_dir}/${name}"
+  printf '\n'
+  success "ticket created for ${name}"
+  printf '\n'
+  info "token: ${token}"
+  info "share this token securely with the node operator"
+  info "it can only be used once — destroyed after JOIN"
+  printf '\n'
+}
+
+# =============================================================================
+# cmd_ticket_list
+# =============================================================================
+cmd_ticket_list() {
+  require_root
+  source_if_exists "${MESH_CONF}"
+  [[ "${MY_IS_CZAR:-false}" == "true" ]] || fatal "only czar can list tickets"
+
+  local ticket_dir="/etc/ldown/tickets"
+  if [[ ! -d "${ticket_dir}" ]] || [[ -z "$(ls -A "${ticket_dir}" 2>/dev/null)" ]]; then
+    info "no tickets"
+    return 0
+  fi
+
+  printf '\n'
+  printf '  %-20s %s\n' "NODE" "CREATED"
+  printf '  %-20s %s\n' "────" "───────"
+  local f
+  for f in "${ticket_dir}"/*; do
+    [[ -f "${f}" ]] || continue
+    local tname
+    tname="$(basename "${f}")"
+    local tcreated
+    tcreated="$(stat -c '%y' "${f}" 2>/dev/null | cut -d. -f1)"
+    printf '  %-20s %s\n' "${tname}" "${tcreated}"
+  done
+  printf '\n'
+}
+
+# =============================================================================
+# cmd_ticket_revoke
+# =============================================================================
+cmd_ticket_revoke() {
+  require_root
+  source_if_exists "${MESH_CONF}"
+  [[ "${MY_IS_CZAR:-false}" == "true" ]] || fatal "only czar can revoke tickets"
+  local name="${1:-}"
+  [[ -n "${name}" ]] || fatal "usage: ldown mesh ticket revoke <name>"
+
+  local ticket_file="/etc/ldown/tickets/${name}"
+  if [[ -f "${ticket_file}" ]]; then
+    rm -f "${ticket_file}"
+    success "ticket revoked for ${name}"
+  else
+    warn "no ticket found for ${name}"
+  fi
 }

@@ -100,7 +100,7 @@ _peer_list() {
 }
 
 _do_join() {
-  local name="\$1" tunnel_ip="\$2" public_ip="\$3" pubkey="\$4" node_pub="\$5" csr_b64="\${6:-}"
+  local name="\$1" tunnel_ip="\$2" public_ip="\$3" pubkey="\$4" node_pub="\$5" csr_b64="\${6:-}" ticket="\${7:-}"
   _llog "INFO" "JOIN \${name} (\${tunnel_ip}) from \${public_ip}"
   [[ -n "\${name}" && -n "\${tunnel_ip}" && -n "\${public_ip}" && -n "\${pubkey}" ]] || {
     printf 'ERROR missing fields\n'; return 1; }
@@ -115,6 +115,26 @@ _do_join() {
   [[ "\${found}" -eq 1 ]] || {
     _llog "WARN" "\${name} not in roster"
     printf 'ERROR not in roster\n'; return 1; }
+
+  # verify admission ticket
+  local ticket_dir="/etc/ldown/tickets"
+  local ticket_file="\${ticket_dir}/\${name}"
+  if [[ -f "\${ticket_file}" ]]; then
+    local expected_ticket
+    { read -r expected_ticket < "\${ticket_file}"; } 2>/dev/null
+    if [[ "\${ticket}" != "\${expected_ticket}" ]]; then
+      _llog "WARN" "[SECURITY] JOIN rejected \u2014 invalid ticket for \${name}"
+      printf 'ERROR invalid ticket\n'
+      return 1
+    fi
+    rm -f "\${ticket_file}"
+    _llog "INFO" "ticket consumed for \${name}"
+  elif [[ -d "\${ticket_dir}" ]] && ls "\${ticket_dir}"/* &>/dev/null 2>&1; then
+    _llog "WARN" "[SECURITY] JOIN rejected \u2014 \${name} has no ticket (tickets required)"
+    printf 'ERROR ticket required\n'
+    return 1
+  fi
+
   printf '%s\n' "\${pubkey}" > "\${KEY_DIR}/\${name}.public.key"
   _llog "INFO" "stored pubkey for \${name}"
 
@@ -484,9 +504,9 @@ case "\${action}" in
     ;;
   JOIN)
     [[ "\${MY_IS_CZAR}" == "true" ]] || { printf 'ERROR not czar\n'; exit 1; }
-    # payload: JOIN name tunnel_ip public_ip pubkey node_signing_pubkey csr_b64
-    # p[0]=sig p[1]=JOIN p[2]=name p[3]=tunnel_ip p[4]=public_ip p[5]=pubkey p[6]=node_signing_pubkey p[7]=csr_b64
-    _do_join "\${p[2]:-}" "\${p[3]:-}" "\${p[4]:-}" "\${p[5]:-}" "\${p[6]:-}" "\${p[7]:-}"
+    # payload: JOIN name tunnel_ip public_ip pubkey node_signing_pubkey csr_b64 ticket
+    # p[0]=sig p[1]=JOIN p[2]=name p[3]=tunnel_ip p[4]=public_ip p[5]=pubkey p[6]=node_signing_pubkey p[7]=csr_b64 p[8]=ticket
+    _do_join "\${p[2]:-}" "\${p[3]:-}" "\${p[4]:-}" "\${p[5]:-}" "\${p[6]:-}" "\${p[7]:-}" "\${p[8]:-}"
     ;;
   LEAVE)
     [[ "\${MY_IS_CZAR}" == "true" ]] || { printf 'ERROR not czar\n'; exit 1; }

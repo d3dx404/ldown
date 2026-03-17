@@ -432,6 +432,15 @@ main() {
             cmd_mesh_watch "$@"
           fi
           ;;
+        ticket)
+          local ticket_cmd="${1:-}"; shift || true
+          case "${ticket_cmd}" in
+            create)  cmd_ticket_create "$@" ;;
+            list)    cmd_ticket_list ;;
+            revoke)  cmd_ticket_revoke "$@" ;;
+            *)       err "usage: ldown mesh ticket {create|list|revoke} [name]"; exit 1 ;;
+          esac
+          ;;
         logs)       cmd_mesh_watch_logs "$@" ;;
         *) err "unknown mesh subcommand: ${subcmd}"; exit 1 ;;
       esac
