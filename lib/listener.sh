@@ -125,6 +125,10 @@ _do_join() {
     chmod 644 "\${KEY_DIR}/\${name}-node.pub"
     _llog "INFO" "stored node signing pubkey for \${name}"
   fi
+  # clear left status on rejoin
+  if [[ -f /run/ldown/left_peers ]]; then
+    sed -i "/^\${name}\$/d" /run/ldown/left_peers 2>/dev/null || true
+  fi
 
   # czar adds the joining node to its own WireGuard interface
   # every other node gets a PEER_ADD message — czar processes the JOIN directly
@@ -201,6 +205,8 @@ _do_leave() {
     wg set "\${WG_INTERFACE}" peer "\${pubkey}" remove 2>/dev/null
   fi
   rm -f "\${PEER_DIR}/peer-\${tunnel_ip}.conf"
+  mkdir -p /run/ldown 2>/dev/null || true
+  printf '%s\n' "\${name}" >> /run/ldown/left_peers
   printf 'OK\n'
   _llog "INFO" "LEAVE complete \${name}"
 

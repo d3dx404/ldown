@@ -1494,16 +1494,16 @@ cmd_mesh_watch() {
           local ep_display="${peer_ep:-${pip}:${pport}}"
 
           local status_display row_color hs_str
-          if ! ${iface_up} || [[ -z "${peer_line_data}" ]]; then
-            if [[ ! -f "${PEER_DIR}/peer-${ptunnel}.conf" ]]; then
-              status_display="${T_DIM}⊘ left   ${RESET}"
-              row_color="${T_DIM}"
-              hs_str="—"
-            else
-              status_display="${T_LILAC}✗ down   ${RESET}"
-              row_color="${T_LILAC}"
-              hs_str="—"
-            fi
+          if [[ ! -f "${PEER_DIR}/peer-${ptunnel}.conf" ]]; then
+            status_display="${T_DIM}⊘ left   ${RESET}"
+            row_color="${T_DIM}"
+            hs_str="—"
+            peer_rx=0
+            peer_tx=0
+          elif ! ${iface_up} || [[ -z "${peer_line_data}" ]]; then
+            status_display="${T_LILAC}✗ down   ${RESET}"
+            row_color="${T_LILAC}"
+            hs_str="—"
             peer_rx=0
             peer_tx=0
           elif [[ "${peer_hs}" == "0" ]]; then

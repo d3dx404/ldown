@@ -58,6 +58,11 @@ _sync_check_peer() {
   local peer_port="$4"
   local peer_keepalive="$5"
 
+  # skip peers that have left the mesh
+  if [[ -f /run/ldown/left_peers ]] && grep -qx "$1" /run/ldown/left_peers 2>/dev/null; then
+    return 0
+  fi
+
   local pubfile="${KEY_DIR}/${peer_name}.public.key"
   local peer_conf="${PEER_DIR}/peer-${peer_tunnel}.conf"
 
