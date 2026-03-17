@@ -18,21 +18,6 @@ source "${_MESH_DIR}/roster.sh"
 # internal helpers
 # =============================================================================
 
-# sign a control plane message with ed25519 or fallback to CLUSTER_TOKEN
-# usage: sign_msg <payload>  →  Ed25519 signature or sha256(payload + CLUSTER_TOKEN)
-# if czar key exists, use cryptographic signing; otherwise use HMAC fallback
-sign_msg() {
-  local payload="$1"
-  local privkey="${KEY_DIR}/czar-control.key"
-  if [[ ! -f "${privkey}" ]]; then
-    printf '%s' "${payload}${CLUSTER_TOKEN}" | sha256sum | awk '{print $1}'
-    return
-  fi
-  printf '%s' "${payload}" | \
-    openssl dgst -sha256 -sign "${privkey}" | \
-    base64 -w0
-}
-
 # serve this node's public key on LDOWN_PORT for exactly one connection
 # used during mesh start bootstrap before listener.sh exists
 # returns the background PID
@@ -1155,7 +1140,7 @@ cmd_mesh_reset() {
       local pubfile="${KEY_DIR}/${MY_NAME}.public.key"
       [[ -f "${pubfile}" ]] && read -r my_pubkey < "${pubfile}"
       local _reset_payload="LEAVE ${MY_NAME} ${MY_TUNNEL_IP:-} ${my_pubkey}"
-      printf '%s\n' "$(sign_msg "${_reset_payload}") ${_reset_payload}" \
+      printf '%s\n' "$(sign_msg "${_reset_payload}" "true") ${_reset_payload}" \
         | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null || true
       status_ok "czar notified" "${CZAR_IP}"
     fi
