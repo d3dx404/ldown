@@ -577,24 +577,21 @@ source_if_exists() {
 }
 
 # ── message signing using node Ed25519 keys ────────────────
-# usage: sign_msg <payload> [use_hmac]
-# signs with CLUSTER_TOKEN HMAC if use_hmac=true, otherwise Ed25519 with node key
-# falls back to HMAC if node key is unavailable
+# usage: sign_msg <payload>
+# signs with node Ed25519 private key using pkeyutl
 sign_msg() {
   local payload="$1"
-  local use_hmac="${2:-false}"
   local node_key="${KEY_DIR}/${MY_NAME}-node.key"
-  if [[ "${use_hmac}" == "true" || ! -f "${node_key}" ]]; then
-    printf '%s' "${payload}${CLUSTER_TOKEN}" | \
-      sha256sum | awk '{print $1}'
-  else
-    local _tmpmsg
-    _tmpmsg="$(mktemp)"
-    printf '%s' "${payload}" > "${_tmpmsg}"
-    openssl pkeyutl -sign -inkey "${node_key}" \
-      -in "${_tmpmsg}" | base64 -w0
-    rm -f "${_tmpmsg}"
+  if [[ ! -f "${node_key}" ]]; then
+    printf '' >&2
+    return 1
   fi
+  local _tmpmsg
+  _tmpmsg="$(mktemp)"
+  printf '%s' "${payload}" > "${_tmpmsg}"
+  openssl pkeyutl -sign -inkey "${node_key}" \
+    -in "${_tmpmsg}" | base64 -w0
+  rm -f "${_tmpmsg}"
 }
 
 # ── message verification using node Ed25519 keys ────────────
@@ -615,11 +612,7 @@ verify_msg() {
     local result=$?
     rm -f "${tmpsig}"
     return ${result}
-  elif [[ -n "${CLUSTER_TOKEN}" ]]; then
-    local expected
-    expected="$(printf '%s' "${payload}${CLUSTER_TOKEN}" | \
-      sha256sum | awk '{print $1}')"
-    [[ "${received_sig}" == "${expected}" ]]
+
   else
     return 1
   fi

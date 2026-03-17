@@ -19,14 +19,6 @@ _slog() {
 }
 
 # =============================================================================
-# sign_msg — sha256(payload + CLUSTER_TOKEN), same impl as mesh.sh
-# CLUSTER_TOKEN is loaded from roster.conf by roster_load each cycle
-# =============================================================================
-sign_msg() {
-  printf '%s' "$1${CLUSTER_TOKEN}" | sha256sum | awk '{print $1}'
-}
-
-# =============================================================================
 # _sync_check_listener
 # restart listener if it's dead
 # =============================================================================
@@ -34,14 +26,25 @@ _sync_check_listener() {
   local pidfile="/run/ldown/listener.pid"
   local pid=""
   { read -r pid < "${pidfile}"; } 2>/dev/null || true
-  if [[ -z "${pid}" ]] || ! kill -0 "${pid}" 2>/dev/null; then
-    _slog "WARN" "listener dead — restarting"
-    # run in a subshell so any fatal/exit inside cmd_listener_start
-    # cannot kill the sync loop
-    ( cmd_listener_start ) 2>/dev/null \
-      && _slog "INFO" "listener restarted" \
-      || _slog "WARN" "listener restart failed — will retry next cycle"
+  if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+    return 0
   fi
+  # port already bound — ncat still alive but PID file stale
+  if ss -tlnp 2>/dev/null | grep -q ":${LDOWN_PORT:-51821} "; then
+    _slog "WARN" "listener PID stale but port ${LDOWN_PORT:-51821} still bound — skipping restart"
+    # try to recover PID file from running ncat
+    local real_pid
+    real_pid="$(ss -tlnp 2>/dev/null | grep ":${LDOWN_PORT:-51821} " | grep -oP 'pid=\K[0-9]+' | head -1)"
+    if [[ -n "${real_pid}" ]]; then
+      printf '%s' "${real_pid}" > "${pidfile}" 2>/dev/null || true
+      _slog "INFO" "recovered listener PID ${real_pid}"
+    fi
+    return 0
+  fi
+  _slog "WARN" "listener dead — restarting"
+  ( cmd_listener_start ) 2>/dev/null \
+    && _slog "INFO" "listener restarted" \
+    || _slog "WARN" "listener restart failed — will retry next cycle"
 }
 
 # =============================================================================
