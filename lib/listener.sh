@@ -306,13 +306,13 @@ _llog "DEBUG" "recv action=\${action} sig=\${sig:0:16}..."
 
 if [[ "\${action}" == "JOIN" ]]; then
   # self-authenticating: verify sig against the pubkey embedded in the message
-  local _join_npub="\${p[6]:-}"
+  _join_npub="\${p[6]:-}"
   if [[ -z "\${_join_npub}" ]]; then
     _llog "WARN" "JOIN from \${p[2]:-unknown} missing node_pub_b64 — dropping"
     exit 1
   fi
-  local _join_tmpkey="\$(mktemp)"
-  local _join_tmpsig="\$(mktemp)"
+  _join_tmpkey="\$(mktemp)"
+  _join_tmpsig="\$(mktemp)"
   if ! printf '%s' "\${_join_npub}" | base64 -d | \
     openssl pkey -pubin -inform DER -outform PEM \
     -out "\${_join_tmpkey}" 2>/dev/null; then
@@ -331,13 +331,13 @@ if [[ "\${action}" == "JOIN" ]]; then
   rm -f "\${_join_tmpkey}" "\${_join_tmpsig}"
 elif [[ "\${action}" == "LEAVE" ]]; then
   # verify against stored node pubkey
-  local _leave_name="\${p[2]:-}"
-  local _leave_pub="\${KEY_DIR}/\${_leave_name}-node.pub"
+  _leave_name="\${p[2]:-}"
+  _leave_pub="\${KEY_DIR}/\${_leave_name}-node.pub"
   if [[ ! -f "\${_leave_pub}" ]]; then
     _llog "WARN" "LEAVE from \${_leave_name} — no stored pubkey, dropping"
     exit 1
   fi
-  local _leave_tmpsig="\$(mktemp)"
+  _leave_tmpsig="\$(mktemp)"
   printf '%s' "\${sig}" | base64 -d > "\${_leave_tmpsig}" 2>/dev/null
   printf '%s' "\${payload}" | \
     openssl pkeyutl -verify -pubin -inkey "\${_leave_pub}" \
