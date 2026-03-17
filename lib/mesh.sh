@@ -1495,9 +1495,15 @@ cmd_mesh_watch() {
 
           local status_display row_color hs_str
           if ! ${iface_up} || [[ -z "${peer_line_data}" ]]; then
-            status_display="${T_LILAC}✗ down   ${RESET}"
-            row_color="${T_LILAC}"
-            hs_str="—"
+            if [[ ! -f "${PEER_DIR}/peer-${ptunnel}.conf" ]]; then
+              status_display="${T_DIM}⊘ left   ${RESET}"
+              row_color="${T_DIM}"
+              hs_str="—"
+            else
+              status_display="${T_LILAC}✗ down   ${RESET}"
+              row_color="${T_LILAC}"
+              hs_str="—"
+            fi
             peer_rx=0
             peer_tx=0
           elif [[ "${peer_hs}" == "0" ]]; then
@@ -1666,58 +1672,252 @@ cmd_mesh_watch_logs() {
   local RESET=$'\033[0m'
   local seg=14
 
+  if [[ -f "${ROSTER_CONF:-/etc/ldown/roster.conf}" ]]; then
+    roster_load "${ROSTER_CONF:-/etc/ldown/roster.conf}" 2>/dev/null || true
+  fi
+  if [[ -f "${MESH_CONF:-/etc/ldown/mesh.conf}" ]]; then
+    source_if_exists "${MESH_CONF:-/etc/ldown/mesh.conf}"
+  fi
+
   local old_stty_logs
   old_stty_logs=$(stty -g 2>/dev/null || true)
   stty -echo -icanon min 0 time 0 2>/dev/null || true
-  trap 'stty "${old_stty_logs}" 2>/dev/null; return 0' INT
 
-  printf '\033[38;5;218m  ✦ ldown — LIVE LOGS\033[0m  '
-  printf '\033[2m(last 10 + live • [l] or [q] returns)\033[0m\n'
-  printf '  '
-  printf '\033[38;5;153m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
-  printf '\033[38;5;218m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
-  printf '\033[0;97m%s'     "$(printf '─%.0s' $(seq 1 ${seg}))"
-  printf '\033[38;5;218m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
-  printf '\033[38;5;153m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
-  printf '\033[0m\n'
-  printf '\033[2m  — recent history —\033[0m\n'
+  printf '\033[?1049h\033[2J\033[H\033[?25l'
 
-  grep -v "PING\|PONG" "${listener_log}" 2>/dev/null | \
-    tail -10 | while IFS= read -r line; do
-      local color="${T_WHITE}"
-      [[ "${line}" == *"SECURITY"* ]] && color="${T_LILAC}"
-      [[ "${line}" == *"[WARN]"* ]]   && color="${T_SKY}"
-      [[ "${line}" == *"[DEBUG]"* ]]  && color="${T_DIM}"
-      [[ "${line}" == *"[INFO]"* ]]   && color="${T_BLUE}"
-      [[ "${line}" == *"[HEAL]"* ]]   && color="${T_SKY}"
-      [[ "${line}" == *"[FEVER]"* ]]  && color="${T_PINK}${T_BOLD}"
-      printf '%s  %s%s\n' "${color}" "${line}" "${RESET}"
+  local tail_pid=""
+  local tmplog="/tmp/ldown-livetail.$$"
+  local filtlog="/tmp/ldown-filtlog.$$"
+
+  _log_cleanup() {
+    [[ -n "${tail_pid}" ]] && kill "${tail_pid}" 2>/dev/null || true
+    wait "${tail_pid}" 2>/dev/null || true
+    rm -f "${tmplog}" "${filtlog}"
+    printf '\033[r'
+    printf '\033[?25h\033[?1049l'
+    stty "${old_stty_logs}" 2>/dev/null || true
+  }
+  trap '_log_cleanup; return 0' INT
+
+  # build IP→name lookup
+  local -A ip_to_name=()
+  local i
+  for i in "${!PEER_NAMES[@]}"; do
+    [[ -n "${PEER_IPS[$i]:-}" ]] && ip_to_name["${PEER_IPS[$i]}"]="${PEER_NAMES[$i]}"
+    [[ -n "${PEER_TUNNELS[$i]:-}" ]] && ip_to_name["${PEER_TUNNELS[$i]}"]="${PEER_NAMES[$i]}"
+  done
+
+  _log_resolve_line() {
+    local line="$1"
+    local ip name
+    for ip in "${!ip_to_name[@]}"; do
+      name="${ip_to_name[$ip]}"
+      line="${line//$ip/${T_PINK}${name}${RESET}}"
     done
+    if [[ "${line}" =~ ^\[([0-9]{4}-[0-9]{2}-[0-9]{2})T([0-9]{2}:[0-9]{2}:[0-9]{2})\] ]]; then
+      line="[${BASH_REMATCH[2]}]${line#*]}"
+    fi
+    printf '%s' "${line}"
+  }
 
-  printf '\033[38;5;218m%s\033[0m\n' \
-    "──────────────────────────────────────────────────────"
-  printf '\033[2m  — live —\033[0m\n'
+  _log_color_line() {
+    local raw="$1"
+    local line
+    line="$(_log_resolve_line "${raw}")"
+    local color="${T_WHITE}"
+    [[ "${raw}" == *"SECURITY"* ]] && color="${T_LILAC}"
+    [[ "${raw}" == *"[WARN]"* ]]   && color="${T_SKY}"
+    [[ "${raw}" == *"[DEBUG]"* ]]  && color="${T_DIM}"
+    [[ "${raw}" == *"[INFO]"* ]]   && color="${T_BLUE}"
+    [[ "${raw}" == *"[HEAL]"* ]]   && color="${T_SKY}"
+    [[ "${raw}" == *"[FEVER]"* ]]  && color="${T_PINK}${T_BOLD}"
+    printf '\033[K%s  %s%s\n' "${color}" "${line}" "${RESET}"
+  }
 
+  _log_sep() {
+    printf '\033[K  '
+    printf '\033[38;5;153m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
+    printf '\033[38;5;218m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
+    printf '\033[0;97m%s'     "$(printf '─%.0s' $(seq 1 ${seg}))"
+    printf '\033[38;5;218m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
+    printf '\033[38;5;153m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
+    printf '\033[0m\n'
+  }
+
+  local role_str="peer"
+  [[ "${MY_IS_CZAR:-false}" == "true" ]] && role_str="czar"
+
+  local term_rows
+  term_rows=$(stty size 2>/dev/null | awk '{print $1}' || echo 24)
+  local header_lines=5
+  local footer_lines=3
+  local content_lines=15
+
+  local log_filter="PING\|PONG\|local: can only be used\|No such file or directory\|Ncat: bind to"
+  local mode="live"
+  local hist_offset=0
+  local hist_total=0
+  local hist_pages=0
+  local hist_page=0
+
+  # ── LIVE MODE ──────────────────────────────────────────────────
+
+  _log_live_header() {
+    printf '\033[H'
+    printf '\033[K\033[38;5;218m  ✦ ldown — LIVE LOGS\033[0m\n'
+    _log_sep
+    printf '\033[K  %snode:%s %s  •  %srole:%s %s  •  %stunnel:%s %s\n' \
+      "${T_DIM}" "${RESET}" "${MY_NAME:-?}" \
+      "${T_DIM}" "${RESET}" "${role_str}" \
+      "${T_DIM}" "${RESET}" "${MY_TUNNEL_IP:-?}"
+    printf '\033[K  %s[q]%s %sback%s  %s[l]%s %sdashboard%s  %s[H]%s %sHISTORY%s      %sPAGE: %sLIVE%s\n' \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+      "${T_DIM}" "${T_BLUE}" "${RESET}"
+    _log_sep
+  }
+
+  _log_enter_live() {
+    mode="live"
+    printf '\033[2J'
+    _log_live_header
+    # set scroll region: header is lines 1-5, scrollable area is 6 to term_rows
+    printf '\033[%d;%dr' "$((header_lines + 1))" "${term_rows}"
+    printf '\033[%d;1H' "$((header_lines + 1))"
+    # show last 10 from history
+    grep -v "${log_filter}" "${listener_log}" 2>/dev/null | \
+      tail -10 | while IFS= read -r line; do
+        _log_color_line "${line}"
+      done
+    # reset tail tracking
+    : > "${tmplog}"
+    last_tail_size=0
+  }
+
+  # ── HISTORY MODE ───────────────────────────────────────────────
+
+  _log_hist_reload() {
+    grep -v "${log_filter}" "${listener_log}" > "${filtlog}" 2>/dev/null || : > "${filtlog}"
+    hist_total=$(wc -l < "${filtlog}" 2>/dev/null || echo 0)
+    hist_pages=$(( (hist_total + content_lines - 1) / content_lines ))
+    [[ "${hist_pages}" -lt 1 ]] && hist_pages=1
+    # start at last page
+    hist_page="${hist_pages}"
+    hist_offset=$(( (hist_page - 1) * content_lines ))
+  }
+
+  _log_hist_draw() {
+    printf '\033[r'
+    printf '\033[2J\033[H'
+    # header — 2 lines
+    printf '\033[K\033[38;5;218m  ✦ ldown — LOG HISTORY\033[0m\n'
+    _log_sep
+    # footer first — pinned right after header
+    printf '\033[K  %s[q]%s %sback%s  %s[l]%s %sdashboard%s  %s[H]%s %sLIVE%s           %sPAGE: %s%d/%d%s\n' \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+      "${T_SKY}" "${RESET}" "${T_BLUE}" "${RESET}" \
+      "${T_DIM}" "${T_WHITE}" "${hist_page}" "${hist_pages}" "${RESET}"
+    printf '\033[K  %s[←]%s %sPage%s %s[→]%s %sPage%s  %s[↑]%s %sUp%s %s[↓]%s %sDown%s\n' \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}"
+    _log_sep
+    # content area — starts at line 7
+    local start_line=$((hist_offset + 1))
+    local end_line=$((hist_offset + content_lines))
+    [[ "${end_line}" -gt "${hist_total}" ]] && end_line="${hist_total}"
+    if [[ "${hist_total}" -gt 0 && "${start_line}" -le "${hist_total}" ]]; then
+      sed -n "${start_line},${end_line}p" "${filtlog}" | while IFS= read -r line; do
+        _log_color_line "${line}"
+      done
+    fi
+  }
+
+  # ── MAIN LOOP ──────────────────────────────────────────────────
+
+  # start tail -f background
+  : > "${tmplog}"
   tail -f "${listener_log}" 2>/dev/null | \
-    grep --line-buffered -v "PING\|PONG" | \
-    while IFS= read -r line; do
-      k=""
-      read -r -s -n1 -t0 k 2>/dev/null
-      if [[ "${k}" == "l" || "${k}" == "L" || \
-            "${k}" == "q" || "${k}" == "Q" ]]; then
-        break
-      fi
-      color="${T_WHITE}"
-      [[ "${line}" == *"SECURITY"* ]] && color="${T_LILAC}"
-      [[ "${line}" == *"[WARN]"* ]]   && color="${T_SKY}"
-      [[ "${line}" == *"[DEBUG]"* ]]  && color="${T_DIM}"
-      [[ "${line}" == *"[INFO]"* ]]   && color="${T_BLUE}"
-      [[ "${line}" == *"[HEAL]"* ]]   && color="${T_SKY}"
-      [[ "${line}" == *"[FEVER]"* ]]  && color="${T_PINK}${T_BOLD}"
-      printf '%s  %s%s\n' "${color}" "${line}" "${RESET}"
-    done
+    grep --line-buffered -v "${log_filter}" >> "${tmplog}" &
+  tail_pid=$!
+  local last_tail_size=0
 
-  stty "${old_stty_logs}" 2>/dev/null || true
+  _log_enter_live
+
+  while true; do
+    local k=""
+    read -r -s -n1 -t1 k 2>/dev/null || true
+
+    if [[ "${k}" == "q" || "${k}" == "Q" ]]; then
+      break
+    elif [[ "${k}" == "l" || "${k}" == "L" ]]; then
+      break
+    elif [[ "${k}" == "h" || "${k}" == "H" ]]; then
+      if [[ "${mode}" == "live" ]]; then
+        _log_hist_reload
+        _log_hist_draw
+        mode="history"
+      else
+        _log_enter_live
+      fi
+      continue
+    elif [[ "${k}" == $'\033' ]]; then
+      local seq1="" seq2=""
+      read -r -s -n1 -t0.2 seq1 2>/dev/null || true
+      read -r -s -n1 -t0.2 seq2 2>/dev/null || true
+      if [[ "${seq1}" == "[" && "${mode}" == "history" ]]; then
+        case "${seq2}" in
+          D) # left arrow — previous page
+            if [[ "${hist_page}" -gt 1 ]]; then
+              hist_page=$((hist_page - 1))
+              hist_offset=$(( (hist_page - 1) * content_lines ))
+              _log_hist_draw
+            fi
+            ;;
+          C) # right arrow — next page
+            if [[ "${hist_page}" -lt "${hist_pages}" ]]; then
+              hist_page=$((hist_page + 1))
+              hist_offset=$(( (hist_page - 1) * content_lines ))
+              _log_hist_draw
+            fi
+            ;;
+          A) # up arrow — scroll up one line
+            if [[ "${hist_offset}" -gt 0 ]]; then
+              hist_offset=$((hist_offset - 1))
+              hist_page=$(( hist_offset / content_lines + 1 ))
+              _log_hist_draw
+            fi
+            ;;
+          B) # down arrow — scroll down one line
+            if [[ $((hist_offset + content_lines)) -lt "${hist_total}" ]]; then
+              hist_offset=$((hist_offset + 1))
+              hist_page=$(( hist_offset / content_lines + 1 ))
+              _log_hist_draw
+            fi
+            ;;
+        esac
+      fi
+      continue
+    fi
+
+    # live mode: stream new lines
+    if [[ "${mode}" == "live" ]]; then
+      local cur_tail_size
+      cur_tail_size=$(wc -l < "${tmplog}" 2>/dev/null || echo 0)
+      if [[ "${cur_tail_size}" -gt "${last_tail_size}" ]]; then
+        sed -n "$((last_tail_size + 1)),${cur_tail_size}p" "${tmplog}" | \
+          while IFS= read -r line; do
+            _log_color_line "${line}"
+          done
+        last_tail_size="${cur_tail_size}"
+      fi
+    fi
+  done
+
+  _log_cleanup
 }
 
 # =============================================================================

@@ -432,6 +432,7 @@ main() {
             cmd_mesh_watch "$@"
           fi
           ;;
+        logs)       cmd_mesh_watch_logs "$@" ;;
         *) err "unknown mesh subcommand: ${subcmd}"; exit 1 ;;
       esac
       ;;
