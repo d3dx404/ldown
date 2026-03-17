@@ -555,7 +555,12 @@ cmd_mesh_join() {
     -pubin -outform DER 2>/dev/null | base64 -w0)"
 
   local peer_list
-  local _join_raw="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pubkey} ${node_signing_pub}"
+  local csr_b64=""
+  local csr_file="${KEY_DIR}/${MY_NAME}.csr"
+  if [[ -f "${csr_file}" ]]; then
+    csr_b64="$(base64 -w0 < "${csr_file}")"
+  fi
+  local _join_raw="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pubkey} ${node_signing_pub} ${csr_b64}"
   local _join_payload
   _join_payload="$(make_payload "${_join_raw}")"
   peer_list="$(printf '%s\n' "$(sign_msg "${_join_payload}") ${_join_payload}" \
@@ -575,6 +580,14 @@ cmd_mesh_join() {
   while IFS= read -r peer_line; do
     [[ -z "${peer_line}" ]] && continue
     [[ "${peer_line}" =~ ^ERROR ]] && fatal "czar rejected join: ${peer_line}"
+    # check for signed cert from czar
+    if [[ "${peer_line}" =~ ^CERT: ]]; then
+      local cert_b64="${peer_line#CERT:}"
+      printf '%s' "${cert_b64}" | base64 -d > "${TLS_CERT}" 2>/dev/null
+      chmod 644 "${TLS_CERT}"
+      status_ok "TLS cert" "CA-signed cert installed by czar"
+      continue
+    fi
 
     local peer_name peer_tunnel peer_endpoint peer_pubkey peer_keepalive peer_node_pub
     read -r peer_name peer_tunnel peer_endpoint peer_pubkey peer_keepalive peer_node_pub \

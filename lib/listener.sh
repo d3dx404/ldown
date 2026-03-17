@@ -100,7 +100,7 @@ _peer_list() {
 }
 
 _do_join() {
-  local name="\$1" tunnel_ip="\$2" public_ip="\$3" pubkey="\$4" node_pub="\$5"
+  local name="\$1" tunnel_ip="\$2" public_ip="\$3" pubkey="\$4" node_pub="\$5" csr_b64="\${6:-}"
   _llog "INFO" "JOIN \${name} (\${tunnel_ip}) from \${public_ip}"
   [[ -n "\${name}" && -n "\${tunnel_ip}" && -n "\${public_ip}" && -n "\${pubkey}" ]] || {
     printf 'ERROR missing fields\n'; return 1; }
@@ -144,6 +144,30 @@ _do_join() {
   wg_write_peer "\${PEER_DIR}/peer-\${tunnel_ip}.conf" \
     "\${pubkey}" "\${tunnel_ip}/32" "\${public_ip}:\${WG_PORT}" ""
   ping -c1 -W1 "\${tunnel_ip}" &>/dev/null || true
+
+  # sign node CSR with CA if available
+  if [[ -n "\${csr_b64}" && -f "\${KEY_DIR}/ca.key" && -f "\${KEY_DIR}/ca.cert" ]]; then
+    local _csr_tmp="\$(mktemp)"
+    local _cert_tmp="\$(mktemp)"
+    printf '%s' "\${csr_b64}" | base64 -d > "\${_csr_tmp}" 2>/dev/null
+    if openssl x509 -req \
+      -in "\${_csr_tmp}" \
+      -CA "\${KEY_DIR}/ca.cert" \
+      -CAkey "\${KEY_DIR}/ca.key" \
+      -CAcreateserial \
+      -out "\${_cert_tmp}" \
+      -days 7 2>/dev/null; then
+      local _signed_b64
+      _signed_b64="\$(base64 -w0 < "\${_cert_tmp}")"
+      printf 'CERT:%s\n' "\${_signed_b64}"
+      # also store a copy for czar's records
+      cp "\${_cert_tmp}" "\${KEY_DIR}/\${name}-tls.cert" 2>/dev/null
+      _llog "INFO" "signed TLS cert for \${name} (7-day)"
+    else
+      _llog "WARN" "failed to sign CSR for \${name}"
+    fi
+    rm -f "\${_csr_tmp}" "\${_cert_tmp}"
+  fi
 
   local czar_pub
   { read -r czar_pub < "\${KEY_DIR}/\${MY_NAME}.public.key"; } 2>/dev/null
@@ -457,9 +481,9 @@ case "\${action}" in
     ;;
   JOIN)
     [[ "\${MY_IS_CZAR}" == "true" ]] || { printf 'ERROR not czar\n'; exit 1; }
-    # payload: JOIN name tunnel_ip public_ip pubkey node_signing_pubkey
-    # p[0]=sig p[1]=JOIN p[2]=name p[3]=tunnel_ip p[4]=public_ip p[5]=pubkey p[6]=node_signing_pubkey
-    _do_join "\${p[2]:-}" "\${p[3]:-}" "\${p[4]:-}" "\${p[5]:-}" "\${p[6]:-}"
+    # payload: JOIN name tunnel_ip public_ip pubkey node_signing_pubkey csr_b64
+    # p[0]=sig p[1]=JOIN p[2]=name p[3]=tunnel_ip p[4]=public_ip p[5]=pubkey p[6]=node_signing_pubkey p[7]=csr_b64
+    _do_join "\${p[2]:-}" "\${p[3]:-}" "\${p[4]:-}" "\${p[5]:-}" "\${p[6]:-}" "\${p[7]:-}"
     ;;
   LEAVE)
     [[ "\${MY_IS_CZAR}" == "true" ]] || { printf 'ERROR not czar\n'; exit 1; }
