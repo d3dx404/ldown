@@ -444,6 +444,21 @@ cmd_listener_start() {
   _listener_write_handler "${handler}"
   echo "${handler}" > /run/ldown/listener.handler
 
+  if fuser "${LDOWN_PORT}"/tcp &>/dev/null 2>&1; then
+    local port_pid
+    port_pid=$(fuser "${LDOWN_PORT}"/tcp 2>/dev/null | tr -d ' ')
+    local our_pid=""
+    [[ -f "${pidfile}" ]] && read -r our_pid < "${pidfile}"
+    if [[ "${port_pid}" == "${our_pid}" ]]; then
+      # our listener is running fine — do nothing
+      return 0
+    else
+      # something else has the port — kill it
+      fuser -k "${LDOWN_PORT}"/tcp 2>/dev/null || true
+      sleep 0.5
+    fi
+  fi
+
   _listener_log "INFO" "starting on ${MY_IP}:${LDOWN_PORT} (czar=${MY_IS_CZAR})"
 
   (
