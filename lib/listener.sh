@@ -304,14 +304,49 @@ payload="\${line#* }"   # everything after the sig — the exact string that was
 
 _llog "DEBUG" "recv action=\${action} sig=\${sig:0:16}..."
 
-if [[ "\${action}" == "JOIN" || "\${action}" == "LEAVE" ]]; then
-  # JOIN/LEAVE use CLUSTER_TOKEN — node pubkey not yet stored
-  expected="\$(printf '%s' "\${payload}\${CLUSTER_TOKEN}" | \
-    sha256sum | awk '{print \$1}')"
-  if [[ "\${sig}" != "\${expected}" ]]; then
-    _llog "WARN" "JOIN sig verify failed — dropping"
+if [[ "\${action}" == "JOIN" ]]; then
+  # self-authenticating: verify sig against the pubkey embedded in the message
+  local _join_npub="\${p[6]:-}"
+  if [[ -z "\${_join_npub}" ]]; then
+    _llog "WARN" "JOIN from \${p[2]:-unknown} missing node_pub_b64 — dropping"
     exit 1
   fi
+  local _join_tmpkey="\$(mktemp)"
+  local _join_tmpsig="\$(mktemp)"
+  if ! printf '%s' "\${_join_npub}" | base64 -d | \
+    openssl pkey -pubin -inform DER -outform PEM \
+    -out "\${_join_tmpkey}" 2>/dev/null; then
+    _llog "WARN" "JOIN from \${p[2]:-unknown} invalid node pubkey — dropping"
+    rm -f "\${_join_tmpkey}" "\${_join_tmpsig}"
+    exit 1
+  fi
+  printf '%s' "\${sig}" | base64 -d > "\${_join_tmpsig}" 2>/dev/null
+  printf '%s' "\${payload}" | \
+    openssl pkeyutl -verify -pubin -inkey "\${_join_tmpkey}" \
+    -sigfile "\${_join_tmpsig}" >/dev/null 2>&1 || {
+    _llog "WARN" "JOIN sig verify failed for \${p[2]:-unknown} — dropping"
+    rm -f "\${_join_tmpkey}" "\${_join_tmpsig}"
+    exit 1
+  }
+  rm -f "\${_join_tmpkey}" "\${_join_tmpsig}"
+elif [[ "\${action}" == "LEAVE" ]]; then
+  # verify against stored node pubkey
+  local _leave_name="\${p[2]:-}"
+  local _leave_pub="\${KEY_DIR}/\${_leave_name}-node.pub"
+  if [[ ! -f "\${_leave_pub}" ]]; then
+    _llog "WARN" "LEAVE from \${_leave_name} — no stored pubkey, dropping"
+    exit 1
+  fi
+  local _leave_tmpsig="\$(mktemp)"
+  printf '%s' "\${sig}" | base64 -d > "\${_leave_tmpsig}" 2>/dev/null
+  printf '%s' "\${payload}" | \
+    openssl pkeyutl -verify -pubin -inkey "\${_leave_pub}" \
+    -sigfile "\${_leave_tmpsig}" >/dev/null 2>&1 || {
+    _llog "WARN" "LEAVE sig verify failed for \${_leave_name} — dropping"
+    rm -f "\${_leave_tmpsig}"
+    exit 1
+  }
+  rm -f "\${_leave_tmpsig}"
 elif [[ "\${action}" != "PUBKEY" && "\${action}" != "PING" ]]; then
   if [[ "\${action}" == "PEER_ADD" || \
         "\${action}" == "PEER_REMOVE" || \
