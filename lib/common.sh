@@ -588,9 +588,12 @@ sign_msg() {
     printf '%s' "${payload}${CLUSTER_TOKEN}" | \
       sha256sum | awk '{print $1}'
   else
-    printf '%s' "${payload}" | \
-      openssl pkeyutl -sign -inkey "${node_key}" | \
-      base64 -w0
+    local _tmpmsg
+    _tmpmsg="$(mktemp)"
+    printf '%s' "${payload}" > "${_tmpmsg}"
+    openssl pkeyutl -sign -inkey "${node_key}" \
+      -in "${_tmpmsg}" | base64 -w0
+    rm -f "${_tmpmsg}"
   fi
 }
 
