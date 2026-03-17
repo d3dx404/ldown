@@ -210,9 +210,9 @@ _do_join() {
     local payload="\$(make_payload "\${raw_payload}")"
     local notify="\$(sign_msg "\${payload}") \${payload}"
     # send with one retry
-    if ! printf '%s\n' "\${notify}" | ncat --wait 2 "\${pip}" "\${LDOWN_PORT}" >/dev/null 2>&1; then
+    if ! printf '%s\n' "\${notify}" | ncat --ssl --wait 2 "\${pip}" "\${LDOWN_PORT}" >/dev/null 2>&1; then
       sleep 2
-      printf '%s\n' "\${notify}" | ncat --wait 2 "\${pip}" "\${LDOWN_PORT}" >/dev/null 2>&1 || \
+      printf '%s\n' "\${notify}" | ncat --ssl --wait 2 "\${pip}" "\${LDOWN_PORT}" >/dev/null 2>&1 || \
         _llog "WARN" "PEER_ADD failed for \${pname} (\${pip}) after retry"
     else
       _llog "DEBUG" "PEER_ADD sent to \${pname}"
@@ -251,7 +251,7 @@ _do_leave() {
     local rm_raw="PEER_REMOVE \${name} \${tunnel_ip} \${pubkey}"
     local rm_payload="\$(make_payload "\${rm_raw}")"
     local remove_msg="\$(sign_msg "\${rm_payload}") \${rm_payload}"
-    printf '%s\n' "\${remove_msg}" | ncat --wait 2 "\${pip}" "\${LDOWN_PORT}" >/dev/null 2>&1 || \
+    printf '%s\n' "\${remove_msg}" | ncat --ssl --wait 2 "\${pip}" "\${LDOWN_PORT}" >/dev/null 2>&1 || \
       _llog "WARN" "PEER_REMOVE failed for \${pname}"
   done
 }
@@ -641,6 +641,7 @@ cmd_listener_start() {
     trap 'rm -f "${handler}"' EXIT
     while true; do
       ncat -l --keep-open "${MY_IP}" "${LDOWN_PORT}" \
+        --ssl --ssl-cert "${TLS_CERT}" --ssl-key "${TLS_KEY}" \
         --sh-exec "bash ${handler}" \
         --idle-timeout 5 \
         2>>"${LOG_LISTENER}" || true

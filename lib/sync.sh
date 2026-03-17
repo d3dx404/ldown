@@ -141,7 +141,7 @@ _sync_fetch_pubkey_from_czar() {
   sig=$(sign_msg "${payload}")
   local result
   result=$(printf '%s\n' "${sig} ${payload}" \
-    | ncat --wait 5 "${czar_ip}" "${LDOWN_PORT}" 2>/dev/null) || return 1
+    | ncat --ssl --wait 5 "${czar_ip}" "${LDOWN_PORT}" 2>/dev/null) || return 1
   is_valid_wg_key "${result}" || return 1
   printf '%s\n' "${result}"
 }
@@ -161,7 +161,7 @@ _sync_rejoin_if_needed() {
   sig=$(sign_msg "${payload}")
   local response
   response=$(printf '%s\n' "${sig} ${payload}" \
-    | ncat --wait 5 "${czar_ip}" "${LDOWN_PORT}" 2>/dev/null) || true
+    | ncat --ssl --wait 5 "${czar_ip}" "${LDOWN_PORT}" 2>/dev/null) || true
 
   if [[ "${response}" != "PONG"* ]]; then
     _slog "WARN" "czar doesn't know us — re-joining"
@@ -171,7 +171,7 @@ _sync_rejoin_if_needed() {
     local join_sig
     join_sig=$(sign_msg "${join_payload}")
     printf '%s\n' "${join_sig} ${join_payload}" \
-      | ncat --wait 5 "${czar_ip}" "${LDOWN_PORT}" &>/dev/null || true
+      | ncat --ssl --wait 5 "${czar_ip}" "${LDOWN_PORT}" &>/dev/null || true
     _slog "INFO" "re-JOIN sent to czar"
   fi
 }

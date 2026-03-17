@@ -564,7 +564,7 @@ cmd_mesh_join() {
   local _join_payload
   _join_payload="$(make_payload "${_join_raw}")"
   peer_list="$(printf '%s\n' "$(sign_msg "${_join_payload}") ${_join_payload}" \
-    | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)" || \
+    | ncat --ssl "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)" || \
     fatal "could not reach czar at ${CZAR_IP}:${LDOWN_PORT} — is the mesh running?"
 
   [[ -n "${peer_list}" ]] || \
@@ -746,7 +746,7 @@ cmd_mesh_leave() {
   local _leave_payload
   _leave_payload="$(make_payload "${_leave_raw}")"
   local response
-  response="$(printf '%s\n' "$(sign_msg "${_leave_payload}") ${_leave_payload}" | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)" || true
+  response="$(printf '%s\n' "$(sign_msg "${_leave_payload}") ${_leave_payload}" | ncat --ssl "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)" || true
   
   if [[ "${response}" == *"OK"* ]]; then
     status_ok "czar notified" "${CZAR_IP}"
@@ -1273,7 +1273,7 @@ cmd_mesh_reset() {
       local _reset_payload
       _reset_payload="$(make_payload "${_reset_raw}")"
       printf '%s\n' "$(sign_msg "${_reset_payload}") ${_reset_payload}" \
-        | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null || true
+        | ncat --ssl "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null || true
       status_ok "czar notified" "${CZAR_IP}"
     fi
   fi
@@ -2381,7 +2381,7 @@ cmd_mesh_doctor() {
       warnings=$((warnings + 1))
     fi
 
-    if echo PING | ncat --wait 2 --send-only "${CZAR_IP}" "${LDOWN_PORT}" &>/dev/null; then
+    if echo PING | ncat --ssl --wait 2 --send-only "${CZAR_IP}" "${LDOWN_PORT}" &>/dev/null; then
       status_ok "czar port" "${LDOWN_PORT} open"
     else
       status_warn "czar port" "${LDOWN_PORT} not reachable — listener may be down"
