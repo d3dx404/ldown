@@ -195,29 +195,90 @@ cmd_mesh_init() {
     fi
   fi
 
-  # ── TLS cert ────────────────────────────────────────────
+  # ── Certificate Authority (czar only) ───────────────────
+  local ca_key="${KEY_DIR}/ca.key"
+  local ca_cert="${KEY_DIR}/ca.cert"
+  if [[ "${MY_IS_CZAR}" == "true" ]]; then
+    step "certificate authority"
+    if [[ -f "${ca_key}" && -f "${ca_cert}" ]]; then
+      status_ok "CA exists" "${ca_cert} — skipping"
+    else
+      must "generate CA key" openssl genpkey -algorithm ed25519 \
+        -out "${ca_key}" 2>/dev/null
+      must "secure CA key" chmod 600 "${ca_key}"
+      must "generate CA cert" openssl req -x509 -new \
+        -key "${ca_key}" \
+        -out "${ca_cert}" \
+        -days 3650 \
+        -subj "/CN=ldown-ca/O=ldown"
+      must "secure CA cert" chmod 644 "${ca_cert}"
+      status_ok "CA key" "${ca_key}"
+      status_ok "CA cert" "${ca_cert}"
+    fi
+  fi
+
+  # ── node TLS certificate ────────────────────────────────
   step "TLS certificate"
+  local tls_key="${TLS_KEY}"
+  local tls_cert="${TLS_CERT}"
+  local tls_csr="${KEY_DIR}/${MY_NAME}.csr"
 
-  if [[ -f "${TLS_CERT}" && -f "${TLS_KEY}" ]]; then
-    status_ok "TLS cert exists" "${TLS_CERT} — skipping"
+  if [[ -f "${tls_cert}" && -f "${tls_key}" ]]; then
+    # check if cert is CA-signed or self-signed
+    local issuer
+    issuer="$(openssl x509 -in "${tls_cert}" -noout -issuer 2>/dev/null || true)"
+    if [[ "${issuer}" == *"ldown-ca"* ]]; then
+      status_ok "TLS cert exists" "CA-signed — skipping"
+    else
+      info "self-signed cert found — will be replaced when czar signs it"
+      status_ok "TLS cert exists" "${tls_cert} (self-signed)"
+    fi
   else
-    must "generate TLS cert" openssl req -x509 -newkey rsa:4096 \
-      -keyout "${TLS_KEY}" \
-      -out    "${TLS_CERT}" \
-      -days   "${TLS_CERT_DAYS}" \
-      -nodes  \
-      -subj   "/CN=ldown-${MY_NAME}"
+    must "generate TLS key" openssl genpkey -algorithm ed25519 \
+      -out "${tls_key}" 2>/dev/null
+    must "secure TLS key" chmod 600 "${tls_key}"
+    status_ok "TLS key" "${tls_key}"
+  fi
 
-    must "secure TLS key" chmod 600 "${TLS_KEY}"
-    status_ok "TLS cert written" "${TLS_CERT}"
-    status_ok "TLS key written"  "${TLS_KEY}"
+  # generate CSR (always, so it's ready for czar signing)
+  must "generate CSR" openssl req -new \
+    -key "${tls_key}" \
+    -out "${tls_csr}" \
+    -subj "/CN=ldown-${MY_NAME}/O=ldown"
+  status_ok "CSR ready" "${tls_csr}"
+
+  # if czar, self-sign immediately with CA
+  if [[ "${MY_IS_CZAR}" == "true" && -f "${ca_key}" ]]; then
+    must "sign node cert with CA" openssl x509 -req \
+      -in "${tls_csr}" \
+      -CA "${ca_cert}" \
+      -CAkey "${ca_key}" \
+      -CAcreateserial \
+      -out "${tls_cert}" \
+      -days 7 2>/dev/null
+    status_ok "TLS cert signed" "7-day cert by CA"
+  elif [[ ! -f "${tls_cert}" ]]; then
+    # non-czar without cert: generate self-signed placeholder
+    must "generate self-signed cert" openssl req -x509 \
+      -key "${tls_key}" \
+      -out "${tls_cert}" \
+      -days 7 \
+      -subj "/CN=ldown-${MY_NAME}/O=ldown"
+    status_ok "TLS cert" "self-signed placeholder (czar will sign at JOIN)"
   fi
 
   local tls_fingerprint
-  tls_fingerprint="$(openssl x509 -in "${TLS_CERT}" \
+  tls_fingerprint="$(openssl x509 -in "${tls_cert}" \
     -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2)"
-  [[ -n "${tls_fingerprint}" ]] || fatal "failed to extract TLS fingerprint from ${TLS_CERT}"
+  [[ -n "${tls_fingerprint}" ]] || fatal "failed to extract TLS fingerprint"
   status_ok "fingerprint" "${tls_fingerprint}"
+
+  # compute CA fingerprint
+  local ca_fp=""
+  if [[ -f "${ca_cert}" ]]; then
+    ca_fp="$(openssl x509 -in "${ca_cert}" \
+      -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2)"
+  fi
 
   # compute czar signing key fingerprint if available
   local czar_fp=""
@@ -285,6 +346,7 @@ WG_PORT=${WG_PORT}
 LDOWN_PORT=${LDOWN_PORT}
 SUBNET=${SUBNET}
 TLS_FINGERPRINT=\"${tls_fingerprint}\"
+CA_FINGERPRINT=\"${ca_fp}\"
 CZAR_PUBKEY_FP=\"${czar_fp}\"
 NODE_SIGNING_PUBKEY=\"${node_signing_pub}\"
 WG_PUBKEY=\"${my_pubkey}\"
