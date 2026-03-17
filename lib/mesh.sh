@@ -203,13 +203,14 @@ cmd_mesh_init() {
     if [[ -f "${ca_key}" && -f "${ca_cert}" ]]; then
       status_ok "CA exists" "${ca_cert} — skipping"
     else
-      must "generate CA key" openssl genpkey -algorithm ed25519 \
+      must "generate CA key" openssl ecparam -genkey -name prime256v1 -noout \
         -out "${ca_key}" 2>/dev/null
       must "secure CA key" chmod 600 "${ca_key}"
       must "generate CA cert" openssl req -x509 -new \
         -key "${ca_key}" \
         -out "${ca_cert}" \
         -days 3650 \
+        -sha256 \
         -subj "/CN=ldown-ca/O=ldown"
       must "secure CA cert" chmod 644 "${ca_cert}"
       status_ok "CA key" "${ca_key}"
@@ -234,7 +235,7 @@ cmd_mesh_init() {
       status_ok "TLS cert exists" "${tls_cert} (self-signed)"
     fi
   else
-    must "generate TLS key" openssl genpkey -algorithm ed25519 \
+    must "generate TLS key" openssl ecparam -genkey -name prime256v1 -noout \
       -out "${tls_key}" 2>/dev/null
     must "secure TLS key" chmod 600 "${tls_key}"
     status_ok "TLS key" "${tls_key}"
@@ -263,6 +264,7 @@ cmd_mesh_init() {
       -key "${tls_key}" \
       -out "${tls_cert}" \
       -days 7 \
+      -sha256 \
       -subj "/CN=ldown-${MY_NAME}/O=ldown"
     status_ok "TLS cert" "self-signed placeholder (czar will sign at JOIN)"
   fi
