@@ -247,12 +247,17 @@ cmd_mesh_init() {
     stty -echo 2>/dev/null || true
     local mesh_pass=""
     read -r mesh_pass
+    printf '\n  confirm:    '
+    local mesh_pass2=""
+    read -r mesh_pass2
     stty echo 2>/dev/null || true
     printf '\n'
-    if [[ -n "${mesh_pass}" ]]; then
+    if [[ -n "${mesh_pass}" && "${mesh_pass}" == "${mesh_pass2}" ]]; then
       printf '%s' "${mesh_pass}" | openssl dgst -sha256 -binary | base64 > "${psk_file}"
       chmod 600 "${psk_file}"
       status_ok "PSK derived" "${psk_file}"
+    elif [[ -n "${mesh_pass}" ]]; then
+      warn "passphrases did not match — skipping PSK"
     else
       info "no passphrase — skipping PSK"
     fi
