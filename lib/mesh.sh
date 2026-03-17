@@ -465,7 +465,9 @@ cmd_mesh_join() {
     -pubin -outform DER 2>/dev/null | base64 -w0)"
 
   local peer_list
-  local _join_payload="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pubkey} ${node_signing_pub}"
+  local _join_raw="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pubkey} ${node_signing_pub}"
+  local _join_payload
+  _join_payload="$(make_payload "${_join_raw}")"
   peer_list="$(printf '%s\n' "$(sign_msg "${_join_payload}") ${_join_payload}" \
     | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)" || \
     fatal "could not reach czar at ${CZAR_IP}:${LDOWN_PORT} — is the mesh running?"
@@ -629,7 +631,9 @@ cmd_mesh_leave() {
   local pubfile="${KEY_DIR}/${MY_NAME}.public.key"
   [[ -f "${pubfile}" ]] && read -r my_pubkey < "${pubfile}"
 
-  local _leave_payload="LEAVE ${MY_NAME} ${MY_TUNNEL_IP} ${my_pubkey}"
+  local _leave_raw="LEAVE ${MY_NAME} ${MY_TUNNEL_IP} ${my_pubkey}"
+  local _leave_payload
+  _leave_payload="$(make_payload "${_leave_raw}")"
   local response
   response="$(printf '%s\n' "$(sign_msg "${_leave_payload}") ${_leave_payload}" | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)" || true
   
@@ -1139,7 +1143,9 @@ cmd_mesh_reset() {
       local my_pubkey=""
       local pubfile="${KEY_DIR}/${MY_NAME}.public.key"
       [[ -f "${pubfile}" ]] && read -r my_pubkey < "${pubfile}"
-      local _reset_payload="LEAVE ${MY_NAME} ${MY_TUNNEL_IP:-} ${my_pubkey}"
+      local _reset_raw="LEAVE ${MY_NAME} ${MY_TUNNEL_IP:-} ${my_pubkey}"
+      local _reset_payload
+      _reset_payload="$(make_payload "${_reset_raw}")"
       printf '%s\n' "$(sign_msg "${_reset_payload}") ${_reset_payload}" \
         | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null || true
       status_ok "czar notified" "${CZAR_IP}"

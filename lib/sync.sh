@@ -164,7 +164,9 @@ _sync_rejoin_if_needed() {
 
   if [[ "${response}" != "PONG"* ]]; then
     _slog "WARN" "czar doesn't know us — re-joining"
-    local join_payload="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pub}"
+    local join_raw="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pub}"
+    local join_payload
+    join_payload="$(make_payload "${join_raw}")"
     local join_sig
     join_sig=$(sign_msg "${join_payload}")
     printf '%s\n' "${join_sig} ${join_payload}" \

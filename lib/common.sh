@@ -576,6 +576,76 @@ source_if_exists() {
   debug "sourced ${file}"
 }
 
+# ── canonical message format ──────────────────────────────────────────
+# V1|<epoch>|<nonce>|ACTION field1 field2 ...
+# make_payload wraps raw action+fields with version, timestamp, nonce
+# parse_payload strips and validates the envelope, outputs raw action+fields
+# nonce replay protection: seen nonces stored in /run/ldown/nonces
+# messages older than 60 seconds are rejected
+# ──────────────────────────────────────────────────────────────────────
+
+LDOWN_PROTO_VERSION="V1"
+LDOWN_MSG_WINDOW=60
+LDOWN_NONCE_DIR="/run/ldown/nonces"
+
+# usage: make_payload "ACTION field1 field2 ..."
+# outputs: V1|<epoch>|<nonce>|ACTION field1 field2 ...
+make_payload() {
+  local raw="$1"
+  local ts
+  ts="$(date +%s)"
+  local nonce
+  nonce="$(head -c8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  printf '%s|%s|%s|%s' "${LDOWN_PROTO_VERSION}" "${ts}" "${nonce}" "${raw}"
+}
+
+# usage: parse_payload "V1|<epoch>|<nonce>|ACTION field1 field2 ..."
+# validates version, timestamp window, nonce uniqueness
+# on success: outputs the raw "ACTION field1 field2 ..." portion
+# on failure: returns 1
+parse_payload() {
+  local envelope="$1"
+  local version ts nonce raw
+
+  # split on first three pipes
+  version="${envelope%%|*}"
+  local rest="${envelope#*|}"
+  ts="${rest%%|*}"
+  rest="${rest#*|}"
+  nonce="${rest%%|*}"
+  raw="${rest#*|}"
+
+  # validate version
+  if [[ "${version}" != "${LDOWN_PROTO_VERSION}" ]]; then
+    echo "REJECT bad version: ${version}" >&2
+    return 1
+  fi
+
+  # validate timestamp window
+  local now
+  now="$(date +%s)"
+  local age=$(( now - ts ))
+  if (( age < 0 )); then age=$(( -age )); fi
+  if (( age > LDOWN_MSG_WINDOW )); then
+    echo "REJECT stale message: ${age}s old" >&2
+    return 1
+  fi
+
+  # nonce replay check
+  mkdir -p "${LDOWN_NONCE_DIR}" 2>/dev/null || true
+  local nonce_file="${LDOWN_NONCE_DIR}/${nonce}"
+  if [[ -f "${nonce_file}" ]]; then
+    echo "REJECT replay: nonce ${nonce} already seen" >&2
+    return 1
+  fi
+  printf '%s' "${ts}" > "${nonce_file}" 2>/dev/null || true
+
+  # clean expired nonces (older than 2x window)
+  find "${LDOWN_NONCE_DIR}" -type f -mmin +2 -delete 2>/dev/null || true
+
+  printf '%s' "${raw}"
+}
+
 # ── message signing using node Ed25519 keys ────────────────
 # usage: sign_msg <payload>
 # signs with node Ed25519 private key using pkeyutl

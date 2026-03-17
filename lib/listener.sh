@@ -177,7 +177,8 @@ _do_join() {
         -in "\${KEY_DIR}/\${name}-node.pub" \
         -pubin -outform DER 2>/dev/null | base64 -w0)"
     fi
-    local payload="PEER_ADD \${name} \${tunnel_ip} \${public_ip}:\${WG_PORT} \${pubkey} \${pkeepalive:-0} \${node_pub_b64}"
+    local raw_payload="PEER_ADD \${name} \${tunnel_ip} \${public_ip}:\${WG_PORT} \${pubkey} \${pkeepalive:-0} \${node_pub_b64}"
+    local payload="\$(make_payload "\${raw_payload}")"
     local notify="\$(sign_msg "\${payload}") \${payload}"
     # send with one retry
     if ! printf '%s\n' "\${notify}" | ncat --wait 2 "\${pip}" "\${LDOWN_PORT}" >/dev/null 2>&1; then
@@ -218,7 +219,8 @@ _do_leave() {
     local pip="\${PEER_IPS[\$i]}"
     [[ "\${pname}" == "\${MY_NAME}" ]] && continue
     [[ "\${pname}" == "\${name}" ]] && continue
-    local rm_payload="PEER_REMOVE \${name} \${tunnel_ip} \${pubkey}"
+    local rm_raw="PEER_REMOVE \${name} \${tunnel_ip} \${pubkey}"
+    local rm_payload="\$(make_payload "\${rm_raw}")"
     local remove_msg="\$(sign_msg "\${rm_payload}") \${rm_payload}"
     printf '%s\n' "\${remove_msg}" | ncat --wait 2 "\${pip}" "\${LDOWN_PORT}" >/dev/null 2>&1 || \
       _llog "WARN" "PEER_REMOVE failed for \${pname}"
@@ -229,6 +231,49 @@ line=""
 read -r -t 5 line || exit 0
 line="\${line%%\$'\r'}"
 [[ -z "\${line}" ]] && exit 0
+
+# ---------------------------------------------------------------------------
+# canonical message envelope — V1|timestamp|nonce|payload
+# ---------------------------------------------------------------------------
+make_payload() {
+  local raw="\$1"
+  local ts
+  ts="\$(date +%s)"
+  local nonce
+  nonce="\$(head -c8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  printf '%s|%s|%s|%s' "V1" "\${ts}" "\${nonce}" "\${raw}"
+}
+
+parse_payload() {
+  local envelope="\$1"
+  local version ts nonce raw
+  version="\${envelope%%|*}"
+  local rest="\${envelope#*|}"
+  ts="\${rest%%|*}"
+  rest="\${rest#*|}"
+  nonce="\${rest%%|*}"
+  raw="\${rest#*|}"
+  if [[ "\${version}" != "V1" ]]; then
+    _llog "WARN" "bad proto version: \${version}"
+    return 1
+  fi
+  local now
+  now="\$(date +%s)"
+  local age=\$(( now - ts ))
+  if (( age < 0 )); then age=\$(( -age )); fi
+  if (( age > 60 )); then
+    _llog "WARN" "stale message: \${age}s old"
+    return 1
+  fi
+  mkdir -p /run/ldown/nonces 2>/dev/null || true
+  if [[ -f "/run/ldown/nonces/\${nonce}" ]]; then
+    _llog "WARN" "replay detected: nonce \${nonce}"
+    return 1
+  fi
+  printf '%s' "\${ts}" > "/run/ldown/nonces/\${nonce}" 2>/dev/null || true
+  find /run/ldown/nonces -type f -mmin +2 -delete 2>/dev/null || true
+  printf '%s' "\${raw}"
+}
 
 # ---------------------------------------------------------------------------
 # message signing — sign_msg / verify_msg
@@ -306,8 +351,15 @@ fi
 
 read -ra p <<< "\${line}"
 sig="\${p[0]:-}"
-action="\${p[1]:-}"
-payload="\${line#* }"   # everything after the sig — the exact string that was signed
+envelope="\${line#* }"   # everything after the sig — the signed envelope
+
+# extract action from envelope: V1|ts|nonce|ACTION field1...
+_env_token="\${p[1]:-}"
+if [[ "\${_env_token}" == *"|"* ]]; then
+  action="\${_env_token##*|}"
+else
+  action="\${_env_token}"
+fi
 
 _llog "DEBUG" "recv action=\${action} sig=\${sig:0:16}..."
 
@@ -329,7 +381,7 @@ if [[ "\${action}" == "JOIN" ]]; then
   fi
   printf '%s' "\${sig}" | base64 -d > "\${_join_tmpsig}" 2>/dev/null
   _join_tmppay="\$(mktemp)"
-  printf '%s' "\${payload}" > "\${_join_tmppay}"
+  printf '%s' "\${envelope}" > "\${_join_tmppay}"
   openssl pkeyutl -verify -pubin -inkey "\${_join_tmpkey}" \
     -sigfile "\${_join_tmpsig}" -in "\${_join_tmppay}" >/dev/null 2>&1 || {
     _llog "WARN" "JOIN sig verify failed for \${p[2]:-unknown} — dropping"
@@ -348,7 +400,7 @@ elif [[ "\${action}" == "LEAVE" ]]; then
   _leave_tmpsig="\$(mktemp)"
   printf '%s' "\${sig}" | base64 -d > "\${_leave_tmpsig}" 2>/dev/null
   _leave_tmppay="\$(mktemp)"
-  printf '%s' "\${payload}" > "\${_leave_tmppay}"
+  printf '%s' "\${envelope}" > "\${_leave_tmppay}"
   openssl pkeyutl -verify -pubin -inkey "\${_leave_pub}" \
     -sigfile "\${_leave_tmpsig}" -in "\${_leave_tmppay}" >/dev/null 2>&1 || {
     _llog "WARN" "LEAVE sig verify failed for \${_leave_name} — dropping"
@@ -365,10 +417,21 @@ elif [[ "\${action}" != "PUBKEY" && "\${action}" != "PING" ]]; then
   else
     sender_name="\${p[2]:-}"
   fi
-  verify_msg "\${sig}" "\${payload}" "\${sender_name}" || {
+  verify_msg "\${sig}" "\${envelope}" "\${sender_name}" || {
     _llog "WARN" "sig verify failed for \${action} from \${sender_name} — dropping"
     exit 1
   }
+fi
+
+# unwrap envelope — validate timestamp, nonce, version
+if [[ "\${action}" != "PUBKEY" && "\${action}" != "PING" ]]; then
+  raw_payload="\$(parse_payload "\${envelope}")" || {
+    _llog "WARN" "envelope rejected for \${action} — dropping"
+    exit 1
+  }
+  # re-split raw payload so field indices match: p[1]=ACTION p[2]=field1 etc
+  read -ra p <<< "NOSIG \${raw_payload}"
+  action="\${p[1]:-}"
 fi
 
 # source-IP check for czar-only messages
