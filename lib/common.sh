@@ -129,6 +129,30 @@ _log_rotate() {
   fi
 }
 
+# ── wire format reference ─────────────────────────────────────────────────────
+# every signed message: <sig> <ACTION> <field1> <field2> ...
+# sig is always field 0, action is always field 1, args start at field 2
+#
+# ACTION       FIELDS (after sig)                                    SIGNING
+# ──────────── ──────────────────────────────────────────────────── ─────────────
+# JOIN         JOIN name tunnel_ip public_ip wg_pubkey node_pub_b64  HMAC
+# LEAVE        LEAVE name tunnel_ip wg_pubkey                        HMAC
+# PEER_ADD     PEER_ADD name tunnel endpoint wg_pubkey ka npub_b64   czar-control
+# PEER_REMOVE  PEER_REMOVE name tunnel_ip wg_pubkey                  czar-control
+# RECONNECT    (reserved — czar-control signed)                      czar-control
+# REVIVE       (reserved — czar-control signed)                      czar-control
+# PUBKEY       PUBKEY (bare, no sig)                                 none
+# PING         PING (bare, no sig)                                   none
+#
+# field index reference (p[N] in handler):
+#   p[0]=sig  p[1]=action  p[2]=name  p[3]=tunnel_ip  p[4..]=action-specific
+#
+# PEER_ADD keepalive: "0" means none (receiver converts to empty)
+# PEER_ADD node_pub_b64: required (DER base64 of joining node's Ed25519 pubkey)
+# PEER_REMOVE node_pub_b64: not sent (node already has the key or doesn't need it)
+# JOIN node_pub_b64: required (sent by joining node for czar to store)
+# ──────────────────────────────────────────────────────────────────────────────
+
 # ── internal log writer ────────────────────────────────────
 # structured key=value format.
 # uses printf %(...)T to avoid spawning a date subprocess on every call.
