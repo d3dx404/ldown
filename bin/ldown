@@ -464,6 +464,30 @@ main() {
       source "${SCRIPT_DIR}/../lib/make_roster.sh"
       cmd_make_roster "$@"
       ;;
+    stop|quit)
+      require_root
+      source_if_exists "${MESH_CONF}"
+
+      # stop sync
+      if [[ -f "/run/ldown/sync.pid" ]]; then
+        kill "$(cat /run/ldown/sync.pid)" 2>/dev/null || true
+        rm -f /run/ldown/sync.pid
+      fi
+
+      # stop listener
+      if [[ -f "/run/ldown/listener.pid" ]]; then
+        kill "$(cat /run/ldown/listener.pid)" 2>/dev/null || true
+        rm -f /run/ldown/listener.pid
+      fi
+
+      # kill any orphaned ncat
+      pkill -f "ncat.*${LDOWN_PORT}" 2>/dev/null || true
+
+      # bring down wg0
+      ip link delete "${WG_INTERFACE:-wg0}" 2>/dev/null || true
+
+      status_ok "ldown stopped" "all daemons killed"
+      ;;
     *)
       printf 'usage: ldown <command> [options]\n'
       printf '\ncommands:\n'
