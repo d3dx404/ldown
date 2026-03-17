@@ -471,8 +471,23 @@ case "\${action}" in
     pkeepalive="\${p[6]:-}"
     pnode_pub="\${p[7]:-}"
     
+    # roster-pin: reject if name+tunnel not in roster
+    _roster_match=false
+    _ri=""
+    for _ri in "\${!PEER_NAMES[@]}"; do
+      if [[ "\${PEER_NAMES[\$_ri]}" == "\${pname}" && "\${PEER_TUNNEL_IPS[\$_ri]}" == "\${ptunnel}" ]]; then
+        _roster_match=true
+        break
+      fi
+    done
+    if [[ "\${_roster_match}" != "true" ]]; then
+      _llog "WARN" "[SECURITY] PEER_ADD rejected — \${pname} (\${ptunnel}) not in roster"
+      printf 'ERROR not in roster\n'
+      exit 1
+    fi
+
     # treat 0 keepalive as empty
-    [[ "\${pkeepalive}" == "0" ]] && pkeepalive=""
+    [[  "\${pkeepalive}" == "0" ]] && pkeepalive=""
     
     is_valid_wg_key "\${ppubkey}" || { printf 'ERROR invalid pubkey\n'; exit 1; }
     wg_args=(wg set "\${WG_INTERFACE}" peer "\${ppubkey}" allowed-ips "\${ptunnel}/32" endpoint "\${pendpoint}")
@@ -492,6 +507,20 @@ case "\${action}" in
   PEER_REMOVE)
     # p[0]=sig p[1]=PEER_REMOVE p[2]=name p[3]=tunnel_ip p[4]=pubkey
     ppubkey="\${p[4]:-}"
+    # roster-pin: reject if name+tunnel not in roster
+    _rr_name="\${p[2]:-}" _rr_tunnel="\${p[3]:-}"
+    _roster_match=false
+    for _ri in "\${!PEER_NAMES[@]}"; do
+      if [[ "\${PEER_NAMES[\$_ri]}" == "\${_rr_name}" && "\${PEER_TUNNEL_IPS[\$_ri]}" == "\${_rr_tunnel}" ]]; then
+        _roster_match=true
+        break
+      fi
+    done
+    if [[ "\${_roster_match}" != "true" ]]; then
+      _llog "WARN" "[SECURITY] PEER_REMOVE rejected — \${_rr_name} (\${_rr_tunnel}) not in roster"
+      printf 'ERROR not in roster\n'
+      exit 1
+    fi
     is_valid_wg_key "\${ppubkey}" || { printf 'ERROR invalid pubkey\n'; exit 1; }
     ip link show "\${WG_INTERFACE}" &>/dev/null && wg set "\${WG_INTERFACE}" peer "\${ppubkey}" remove 2>/dev/null
     rm -f "\${PEER_DIR}/peer-\${p[3]:-}.conf" 2>/dev/null
