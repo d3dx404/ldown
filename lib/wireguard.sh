@@ -100,6 +100,10 @@ EOF
   if [[ -n "${keepalive}" && "${keepalive}" != "0" ]]; then
     printf 'PersistentKeepalive = %s\n' "${keepalive}" >> "$tmp"
   fi
+  local psk_file="${KEY_DIR:-/etc/ldown/keys}/mesh.psk"
+  if [[ -f "${psk_file}" ]]; then
+    printf 'PresharedKey = %s\n' "$(cat "${psk_file}")" >> "$tmp"
+  fi
 
   chmod 600 "$tmp"
   mkdir -p "$(dirname "${file}")"

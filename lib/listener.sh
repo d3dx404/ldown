@@ -133,10 +133,12 @@ _do_join() {
   # czar adds the joining node to its own WireGuard interface
   # every other node gets a PEER_ADD message — czar processes the JOIN directly
   # so it must do the wg set itself or the joining node is never in czar's peers
+  psk_arg=""
+  [[ -f "\${KEY_DIR}/mesh.psk" ]] && psk_arg="preshared-key \${KEY_DIR}/mesh.psk"
   ip link show "\${WG_INTERFACE}" &>/dev/null && \
     wg set "\${WG_INTERFACE}" peer "\${pubkey}" \
       allowed-ips "\${tunnel_ip}/32" \
-      endpoint "\${public_ip}:\${WG_PORT}" 2>/dev/null && \
+      endpoint "\${public_ip}:\${WG_PORT}" \${psk_arg} 2>/dev/null && \
     _llog "INFO" "czar added \${name} to WireGuard" || \
     _llog "WARN" "czar wg set failed for \${name}"
   wg_write_peer "\${PEER_DIR}/peer-\${tunnel_ip}.conf" \
@@ -492,6 +494,7 @@ case "\${action}" in
     is_valid_wg_key "\${ppubkey}" || { printf 'ERROR invalid pubkey\n'; exit 1; }
     wg_args=(wg set "\${WG_INTERFACE}" peer "\${ppubkey}" allowed-ips "\${ptunnel}/32" endpoint "\${pendpoint}")
     [[ -n "\${pkeepalive}" ]] && wg_args+=(persistent-keepalive "\${pkeepalive}")
+    [[ -f "\${KEY_DIR}/mesh.psk" ]] && wg_args+=(preshared-key "\${KEY_DIR}/mesh.psk")
     "\${wg_args[@]}" 2>/dev/null && printf 'OK\n' || printf 'ERROR wg set failed\n'
     wg_write_peer "\${PEER_DIR}/peer-\${ptunnel}.conf" "\${ppubkey}" "\${ptunnel}/32" "\${pendpoint}" "\${pkeepalive}"
     

@@ -237,6 +237,29 @@ cmd_mesh_init() {
   local node_signing_pub
   node_signing_pub="$(cat "${node_pub}" 2>/dev/null | tr -d '\n')"
 
+  # ── optional mesh passphrase → WireGuard PSK ───────────
+  local psk_file="${KEY_DIR}/mesh.psk"
+  if [[ ! -f "${psk_file}" ]]; then
+    step "mesh passphrase (optional)"
+    info "a shared passphrase adds post-quantum protection to the WireGuard tunnel"
+    info "press Enter to skip, or type a passphrase (all nodes must use the same one)"
+    printf '\n  passphrase: '
+    stty -echo 2>/dev/null || true
+    local mesh_pass=""
+    read -r mesh_pass
+    stty echo 2>/dev/null || true
+    printf '\n'
+    if [[ -n "${mesh_pass}" ]]; then
+      printf '%s' "${mesh_pass}" | openssl dgst -sha256 -binary | base64 > "${psk_file}"
+      chmod 600 "${psk_file}"
+      status_ok "PSK derived" "${psk_file}"
+    else
+      info "no passphrase — skipping PSK"
+    fi
+  else
+    status_ok "PSK exists" "${psk_file} — skipping"
+  fi
+
   # ── write mesh.conf ─────────────────────────────────────
   step "writing mesh.conf"
 
@@ -526,6 +549,7 @@ cmd_mesh_join() {
       endpoint "${peer_endpoint}"
     )
     [[ -n "${peer_keepalive:-}" ]] && wg_args+=(persistent-keepalive "${peer_keepalive}")
+    [[ -f "${KEY_DIR}/mesh.psk" ]] && wg_args+=(preshared-key "${KEY_DIR}/mesh.psk")
 
     must "add peer ${peer_name}" "${wg_args[@]}"
     _joined_pubkeys["${peer_name}"]="${peer_pubkey}"
@@ -808,6 +832,7 @@ cmd_mesh_recover() {
       endpoint "${peer_ip}:${peer_port}"
     )
     [[ -n "${peer_keepalive}" ]] && wg_args+=(persistent-keepalive "${peer_keepalive}")
+    [[ -f "${KEY_DIR}/mesh.psk" ]] && wg_args+=(preshared-key "${KEY_DIR}/mesh.psk")
 
     must "add peer ${peer_name}" "${wg_args[@]}"
     _recovered_pubkeys[$i]="${peer_pubkey}"
@@ -919,6 +944,12 @@ cmd_mesh_export() {
     status_ok "included" "cluster.pub (czar signing key)"
   else
     fatal "czar-control.pub not found — run: ldown mesh init first"
+  fi
+
+  local psk_file="${KEY_DIR}/mesh.psk"
+  if [[ -f "${psk_file}" ]]; then
+    cp "${psk_file}" "${stagedir}/mesh.psk"
+    status_ok "included" "mesh.psk (WireGuard pre-shared key)"
   fi
 
   write_conf "${stagedir}/mesh_export.conf" "# ldown export bundle — ${ts}
@@ -1079,6 +1110,14 @@ cmd_mesh_import() {
     status_ok "czar signing key installed" "${czar_fp}"
   else
     fatal "cluster.pub missing from bundle — export bundle is incomplete"
+  fi
+
+  local bundle_psk="${stagedir}/mesh.psk"
+  if [[ -f "${bundle_psk}" ]]; then
+    mkdir -p /etc/ldown/keys || fatal "cannot create /etc/ldown/keys"
+    cp "${bundle_psk}" /etc/ldown/keys/mesh.psk
+    chmod 600 /etc/ldown/keys/mesh.psk
+    status_ok "PSK installed" "/etc/ldown/keys/mesh.psk"
   fi
 
   must "install mesh_export.conf" cp "${stagedir}/mesh_export.conf" \

@@ -110,6 +110,7 @@ _sync_check_peer() {
     endpoint "${peer_ip}:${peer_port}"
   )
   [[ -n "${peer_keepalive}" ]] && wg_args+=(persistent-keepalive "${peer_keepalive}")
+  [[ -f "${KEY_DIR}/mesh.psk" ]] && wg_args+=(preshared-key "${KEY_DIR}/mesh.psk")
   "${wg_args[@]}" 2>/dev/null || {
     _slog "WARN" "wg set failed for ${peer_name}"
     return 1
