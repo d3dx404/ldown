@@ -389,7 +389,10 @@ cmd_mesh_start() {
   export LDOWN_QUIET=false
   success "mesh started — ${MY_NAME} is live"
   printf '\n'
-  [[ "${OPT_WATCH:-false}" == "true" ]] && cmd_mesh_watch
+  if [[ "${OPT_WATCH:-false}" == "true" ]]; then
+    cmd_mesh_watch
+  fi
+  exit 0
 }
 
 # =============================================================================
@@ -409,6 +412,19 @@ cmd_mesh_join() {
   banner
   require_root
   check_dependency wg ncat
+
+  # check for existing join process
+  local existing_join
+  existing_join=$(pgrep -f "ldown mesh join" 2>/dev/null | \
+    grep -v "^$$\$" | head -1)
+  if [[ -n "${existing_join}" ]]; then
+    warn "mesh join already running (pid ${existing_join})"
+    warn "running multiple joins simultaneously causes listener conflicts"
+    confirm "kill existing join process and start fresh?" || \
+      { info "join cancelled"; exit 1; }
+    kill "${existing_join}" 2>/dev/null || true
+    sleep 1
+  fi
 
   step "verifying init"
 
@@ -579,7 +595,10 @@ cmd_mesh_join() {
 
   success "${MY_NAME} has joined the mesh"
   printf '\n'
-  [[ "${OPT_WATCH:-false}" == "true" ]] && cmd_mesh_watch
+  if [[ "${OPT_WATCH:-false}" == "true" ]]; then
+    cmd_mesh_watch
+  fi
+  exit 0
 }
 
 # =============================================================================
