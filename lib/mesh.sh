@@ -588,6 +588,13 @@ cmd_mesh_join() {
       status_ok "TLS cert" "CA-signed cert installed by czar"
       continue
     fi
+    if [[ "${peer_line}" =~ ^CA: ]]; then
+      local ca_b64="${peer_line#CA:}"
+      printf '%s' "${ca_b64}" | base64 -d > "${KEY_DIR}/ca.cert" 2>/dev/null
+      chmod 644 "${KEY_DIR}/ca.cert"
+      status_ok "CA cert" "installed from czar"
+      continue
+    fi
 
     local peer_name peer_tunnel peer_endpoint peer_pubkey peer_keepalive peer_node_pub
     read -r peer_name peer_tunnel peer_endpoint peer_pubkey peer_keepalive peer_node_pub \

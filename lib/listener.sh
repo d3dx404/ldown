@@ -160,6 +160,9 @@ _do_join() {
       local _signed_b64
       _signed_b64="\$(base64 -w0 < "\${_cert_tmp}")"
       printf 'CERT:%s\n' "\${_signed_b64}"
+      local _ca_b64
+      _ca_b64="\$(base64 -w0 < "\${KEY_DIR}/ca.cert")"
+      printf 'CA:%s\n' "\${_ca_b64}"
       # also store a copy for czar's records
       cp "\${_cert_tmp}" "\${KEY_DIR}/\${name}-tls.cert" 2>/dev/null
       _llog "INFO" "signed TLS cert for \${name} (7-day)"
