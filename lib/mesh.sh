@@ -542,7 +542,7 @@ BEOF
   chmod 700 "${bhandler}"
 
   (
-    trap "rm -f '${bhandler}' '${bpidfile}'; echo 'closed' >> '${bootstrap_meta}'" EXIT
+    trap "fuser -k '${bport}/tcp' 2>/dev/null || true; rm -f '${bhandler}' '${bpidfile}'; echo 'closed' >> '${bootstrap_meta}'" EXIT
     local start_ts
     start_ts=$(date +%s)
 
@@ -566,13 +566,11 @@ BEOF
         fi
       fi
 
-      ncat -l --keep-open "${MY_IP}" "${bport}" \
+      ncat -l "${MY_IP}" "${bport}" \
         --sh-exec "bash ${bhandler}" \
-        --idle-timeout 10 -w 10 \
+        -w 10 \
         2>/dev/null &
       local ncat_pid=$!
-      sleep 5
-      kill ${ncat_pid} 2>/dev/null || true
       wait ${ncat_pid} 2>/dev/null || true
     done
   ) &
