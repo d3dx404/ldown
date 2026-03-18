@@ -567,7 +567,7 @@ cmd_mesh_join() {
   if [[ -f "${ticket_file}" ]]; then
     read -r ticket < "${ticket_file}"
   fi
-  local _join_raw="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pubkey} ${node_signing_pub} ${csr_b64} ${ticket}"
+  local _join_raw="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pubkey} ${node_signing_pub} ${csr_b64} ${ticket:-NONE}"
   local _join_payload
   _join_payload="$(make_payload "${_join_raw}")"
   peer_list="$(printf '%s\n' "$(sign_msg "${_join_payload}") ${_join_payload}" \

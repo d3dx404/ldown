@@ -506,7 +506,9 @@ case "\${action}" in
     [[ "\${MY_IS_CZAR}" == "true" ]] || { printf 'ERROR not czar\n'; exit 1; }
     # payload: JOIN name tunnel_ip public_ip pubkey node_signing_pubkey csr_b64 ticket
     # p[0]=sig p[1]=JOIN p[2]=name p[3]=tunnel_ip p[4]=public_ip p[5]=pubkey p[6]=node_signing_pubkey p[7]=csr_b64 p[8]=ticket
-    _do_join "\${p[2]:-}" "\${p[3]:-}" "\${p[4]:-}" "\${p[5]:-}" "\${p[6]:-}" "\${p[7]:-}" "\${p[8]:-}"
+    _ticket="\${p[8]:-}"
+    [[ "\${_ticket}" == "NONE" ]] && _ticket=""
+    _do_join "\${p[2]:-}" "\${p[3]:-}" "\${p[4]:-}" "\${p[5]:-}" "\${p[6]:-}" "\${p[7]:-}" "\${_ticket}"
     ;;
   LEAVE)
     [[ "\${MY_IS_CZAR}" == "true" ]] || { printf 'ERROR not czar\n'; exit 1; }
