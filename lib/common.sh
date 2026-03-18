@@ -129,6 +129,30 @@ _log_rotate() {
   fi
 }
 
+# ── wire format reference ─────────────────────────────────────────────────────
+# every signed message: <sig> <ACTION> <field1> <field2> ...
+# sig is always field 0, action is always field 1, args start at field 2
+#
+# ACTION       FIELDS (after sig)                                    SIGNING
+# ──────────── ──────────────────────────────────────────────────── ─────────────
+# JOIN         JOIN name tunnel_ip public_ip wg_pubkey node_pub_b64  HMAC
+# LEAVE        LEAVE name tunnel_ip wg_pubkey                        HMAC
+# PEER_ADD     PEER_ADD name tunnel endpoint wg_pubkey ka npub_b64   czar-control
+# PEER_REMOVE  PEER_REMOVE name tunnel_ip wg_pubkey                  czar-control
+# RECONNECT    (reserved — czar-control signed)                      czar-control
+# REVIVE       (reserved — czar-control signed)                      czar-control
+# PUBKEY       PUBKEY (bare, no sig)                                 none
+# PING         PING (bare, no sig)                                   none
+#
+# field index reference (p[N] in handler):
+#   p[0]=sig  p[1]=action  p[2]=name  p[3]=tunnel_ip  p[4..]=action-specific
+#
+# PEER_ADD keepalive: "0" means none (receiver converts to empty)
+# PEER_ADD node_pub_b64: required (DER base64 of joining node's Ed25519 pubkey)
+# PEER_REMOVE node_pub_b64: not sent (node already has the key or doesn't need it)
+# JOIN node_pub_b64: required (sent by joining node for czar to store)
+# ──────────────────────────────────────────────────────────────────────────────
+
 # ── internal log writer ────────────────────────────────────
 # structured key=value format.
 # uses printf %(...)T to avoid spawning a date subprocess on every call.
@@ -252,16 +276,14 @@ divider() {
 # ── banner ─────────────────────────────────────────────────
 # striped in trans flag order: blue / pink / white / pink / blue
 banner() {
-  local ver="${LDOWN_VERSION:-dev}"
+  local ver="${LDOWN_VERSION:-0.2.0-alpha}"
   printf '\n'
-  printf '%b\n' "${T_BLUE}  _     _                                   ${C_RESET}"
-  printf '%b\n' "${T_PINK} | | __| | _____      ___ __               ${C_RESET}"
-  printf '%b\n' "${T_WHITE} | |/ _\` |/ _ \\ \\ /\\ / / '_ \\              ${C_RESET}"
-  printf '%b\n' "${T_PINK} | | (_| | (_) \\ V  V /| | | |             ${C_RESET}"
-  printf '%b\n' "${T_BLUE} |_|\\__,_|\\___/ \\_/\\_/ |_| |_|             ${C_RESET}"
-  printf '\n'
-  printf '%b\n' "${C_GRAY}  network lockdown and tunnel provisioning${C_RESET}"
-  printf '%b\n' "${C_GRAY}  v${ver}${C_RESET}"
+  printf '%b\n' "${T_PINK}     __    __${T_BLUE}                    ${C_RESET}"
+  printf '%b\n' "${T_PINK}    / /___/ /${T_BLUE}___ _      ______  ${C_RESET}"
+  printf '%b\n' "${T_PINK}   / / __  /${T_BLUE} __ \ | /| / / __ \ ${C_RESET}"
+  printf '%b\n' "${T_PINK}  / / /_/ /${T_BLUE} /_/ / |/ |/ / / / / ${C_RESET}"
+  printf '%b\n' "${T_PINK} /_/\\__,_/${T_BLUE}\\____/|__/|__/_/ /_/  ${C_RESET}"
+  printf '%b\n' "${C_GRAY}  v${ver} — network lockdown${C_RESET}"
   printf '\n'
 }
 
@@ -386,12 +408,13 @@ run() {
 # non-TTY: defaults NO with warning, does not hang
 confirm() {
   local msg="${1:-continue?}"
-
+  if [[ "${LDOWN_YES:-false}" == "true" ]]; then
+    return 0
+  fi
   if [[ "${_IS_TTY}" -eq 0 ]]; then
     warn "non-interactive session — defaulting NO for: ${msg}"
     return 1
   fi
-
   local answer
   printf '%b' "${C_YELLOW}[?]${C_RESET} ${msg} ${C_DIM}[y/N]${C_RESET} "
   read -r answer || return 1
@@ -550,4 +573,116 @@ source_if_exists() {
   # shellcheck source=/dev/null
   source "${file}"
   debug "sourced ${file}"
+}
+
+# ── canonical message format ──────────────────────────────────────────
+# V1|<epoch>|<nonce>|ACTION field1 field2 ...
+# make_payload wraps raw action+fields with version, timestamp, nonce
+# parse_payload strips and validates the envelope, outputs raw action+fields
+# nonce replay protection: seen nonces stored in /run/ldown/nonces
+# messages older than 60 seconds are rejected
+# ──────────────────────────────────────────────────────────────────────
+
+LDOWN_PROTO_VERSION="V1"
+LDOWN_MSG_WINDOW=60
+LDOWN_NONCE_DIR="/run/ldown/nonces"
+
+# usage: make_payload "ACTION field1 field2 ..."
+# outputs: V1|<epoch>|<nonce>|ACTION field1 field2 ...
+make_payload() {
+  local raw="$1"
+  local ts
+  ts="$(date +%s)"
+  local nonce
+  nonce="$(head -c8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  printf '%s|%s|%s|%s' "${LDOWN_PROTO_VERSION}" "${ts}" "${nonce}" "${raw}"
+}
+
+# usage: parse_payload "V1|<epoch>|<nonce>|ACTION field1 field2 ..."
+# validates version, timestamp window, nonce uniqueness
+# on success: outputs the raw "ACTION field1 field2 ..." portion
+# on failure: returns 1
+parse_payload() {
+  local envelope="$1"
+  local version ts nonce raw
+
+  # split on first three pipes
+  version="${envelope%%|*}"
+  local rest="${envelope#*|}"
+  ts="${rest%%|*}"
+  rest="${rest#*|}"
+  nonce="${rest%%|*}"
+  raw="${rest#*|}"
+
+  # validate version
+  if [[ "${version}" != "${LDOWN_PROTO_VERSION}" ]]; then
+    echo "REJECT bad version: ${version}" >&2
+    return 1
+  fi
+
+  # validate timestamp window
+  local now
+  now="$(date +%s)"
+  local age=$(( now - ts ))
+  if (( age < 0 )); then age=$(( -age )); fi
+  if (( age > LDOWN_MSG_WINDOW )); then
+    echo "REJECT stale message: ${age}s old" >&2
+    return 1
+  fi
+
+  # nonce replay check
+  mkdir -p "${LDOWN_NONCE_DIR}" 2>/dev/null || true
+  local nonce_file="${LDOWN_NONCE_DIR}/${nonce}"
+  if [[ -f "${nonce_file}" ]]; then
+    echo "REJECT replay: nonce ${nonce} already seen" >&2
+    return 1
+  fi
+  printf '%s' "${ts}" > "${nonce_file}" 2>/dev/null || true
+
+  # clean expired nonces (older than 2x window)
+  find "${LDOWN_NONCE_DIR}" -type f -mmin +2 -delete 2>/dev/null || true
+
+  printf '%s' "${raw}"
+}
+
+# ── message signing using node Ed25519 keys ────────────────
+# usage: sign_msg <payload>
+# signs with node Ed25519 private key using pkeyutl
+sign_msg() {
+  local payload="$1"
+  local node_key="${KEY_DIR}/${MY_NAME}-node.key"
+  if [[ ! -f "${node_key}" ]]; then
+    printf '' >&2
+    return 1
+  fi
+  local _tmpmsg
+  _tmpmsg="$(mktemp)"
+  printf '%s' "${payload}" > "${_tmpmsg}"
+  openssl pkeyutl -sign -inkey "${node_key}" \
+    -in "${_tmpmsg}" | base64 -w0
+  rm -f "${_tmpmsg}"
+}
+
+# ── message verification using node Ed25519 keys ────────────
+# usage: verify_msg <signature> <payload> <sender_name>
+# verifies signature using sender's node Ed25519 public key
+verify_msg() {
+  local received_sig="$1"
+  local payload="$2"
+  local sender_name="$3"
+  local sender_pub="${KEY_DIR}/${sender_name}-node.pub"
+  if [[ -n "${sender_name}" && -f "${sender_pub}" ]]; then
+    local tmpsig
+    tmpsig="$(mktemp)"
+    printf '%s' "${received_sig}" | base64 -d > "${tmpsig}" 2>/dev/null
+    printf '%s' "${payload}" | \
+      openssl pkeyutl -verify -pubin -inkey "${sender_pub}" \
+      -sigfile "${tmpsig}" >/dev/null 2>&1
+    local result=$?
+    rm -f "${tmpsig}"
+    return ${result}
+
+  else
+    return 1
+  fi
 }

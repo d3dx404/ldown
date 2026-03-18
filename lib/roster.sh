@@ -75,7 +75,6 @@ _roster_reset() {
     # cluster state
     NODE_COUNT=0
     ROSTER_HASH=""
-    CLUSTER_TOKEN=""
 
     # internal tracking for validation
     _CZAR_COUNT=0
@@ -86,7 +85,7 @@ _roster_reset() {
 
 # =============================================================================
 # ip detection — finds which roster entry belongs to this machine
-# tries multiple sources, first match against roster wins
+# tries hostname first, then falls back to OPT_IP if provided
 # =============================================================================
 
 _detect_my_ip() {
@@ -106,11 +105,10 @@ _detect_my_ip() {
         [[ -n "$IFACE_IP" ]] && CANDIDATES+=("$IFACE_IP")
     done < <(hostname -I 2>/dev/null | tr ' ' '\n')
 
-    # source 3 — external public IP (last resort, slowest)
-    # try two endpoints in case one is down
-    local PUBLIC_IP
-    PUBLIC_IP=$(curl -fs --max-time 5 https://api.ipify.org 2>/dev/null              || curl -fs --max-time 5 ifconfig.me 2>/dev/null)
-    [[ -n "$PUBLIC_IP" ]] && CANDIDATES+=("$PUBLIC_IP")
+    # source 3 — fallback to OPT_IP if provided
+    if [[ -n "${OPT_IP:-}" ]]; then
+        CANDIDATES+=("${OPT_IP}")
+    fi
 
     # try each candidate against roster — first match wins
     for IP in "${CANDIDATES[@]}"; do
@@ -252,14 +250,13 @@ _validate_roster() {
         warn "this machine IP was not found in roster.conf"
         warn "add this machine to the roster before running init"
         warn "detected IP candidates were:"
-        local _ROUTE_IP _IFACE_IP _PUB_IP
+        local _ROUTE_IP _IFACE_IP
         _ROUTE_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1);exit}}')
         [[ -n "$_ROUTE_IP" ]] && warn "  routing:   ${_ROUTE_IP}"
         while IFS= read -r _IFACE_IP; do
             [[ -n "$_IFACE_IP" ]] && warn "  interface: ${_IFACE_IP}"
         done < <(hostname -I 2>/dev/null | tr ' ' '\n')
-        _PUB_IP=$(curl -fs --max-time 5 https://api.ipify.org 2>/dev/null || curl -fs --max-time 5 ifconfig.me 2>/dev/null)
-        [[ -n "$_PUB_IP" ]] && warn "  public:    ${_PUB_IP}"
+        [[ -n "${OPT_IP:-}" ]] && warn "  --ip flag: ${OPT_IP}"
         ERRORS=$((ERRORS + 1))
     fi
 
@@ -316,8 +313,10 @@ _validate_roster() {
 
     # warnings — soft failures
     if (( ${#RELAY_IPS[@]} == 0 )); then
-        warn "no --relay node defined"
-        warn "NAT traversal will not work for double-NAT scenarios"
+        [[ "${LDOWN_QUIET:-false}" != "true" ]] && \
+            warn "no --relay node defined"
+        [[ "${LDOWN_QUIET:-false}" != "true" ]] && \
+            warn "NAT traversal will not work for double-NAT scenarios"
     fi
 
     # relay behind NAT warning
@@ -325,8 +324,11 @@ _validate_roster() {
         local RELAY="${RELAY_IPS[$i]}"
         # check if relay IP looks like a private/internal address
         if [[ "$RELAY" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.) ]]; then
-            warn "relay node ${RELAY} appears to be behind NAT"
-            warn "relay nodes should have public IPs for reliable forwarding"
+            if [[ "${LDOWN_QUIET:-false}" != "true" && -z "${_LDOWN_NAT_WARNED:-}" ]]; then
+              warn "relay node ${RELAY} appears to be behind NAT"
+              warn "relay nodes should have public IPs for reliable forwarding"
+              export _LDOWN_NAT_WARNED=1
+            fi
         fi
     done
 
@@ -369,10 +371,7 @@ _parse_roster() {
         fi
         if [[ "$LINE" =~ ^WG_PORT= ]];       then WG_PORT="${LINE#*=}";       continue; fi
         if [[ "$LINE" =~ ^LDOWN_PORT= ]];   then LDOWN_PORT="${LINE#*=}";   continue; fi
-        if [[ "$LINE" =~ ^CLUSTER_TOKEN= ]]; then
-            CLUSTER_TOKEN="${LINE#*=}"
-            continue
-        fi
+        if [[ "$LINE" =~ ^CLUSTER_TOKEN= ]]; then continue; fi
 
         # everything past here is a node line
         NODE_POSITION=$((NODE_POSITION + 1))

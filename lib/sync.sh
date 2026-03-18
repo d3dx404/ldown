@@ -19,14 +19,6 @@ _slog() {
 }
 
 # =============================================================================
-# sign_msg — sha256(payload + CLUSTER_TOKEN), same impl as mesh.sh
-# CLUSTER_TOKEN is loaded from roster.conf by roster_load each cycle
-# =============================================================================
-sign_msg() {
-  printf '%s' "$1${CLUSTER_TOKEN}" | sha256sum | awk '{print $1}'
-}
-
-# =============================================================================
 # _sync_check_listener
 # restart listener if it's dead
 # =============================================================================
@@ -34,14 +26,25 @@ _sync_check_listener() {
   local pidfile="/run/ldown/listener.pid"
   local pid=""
   { read -r pid < "${pidfile}"; } 2>/dev/null || true
-  if [[ -z "${pid}" ]] || ! kill -0 "${pid}" 2>/dev/null; then
-    _slog "WARN" "listener dead — restarting"
-    # run in a subshell so any fatal/exit inside cmd_listener_start
-    # cannot kill the sync loop
-    ( cmd_listener_start ) 2>/dev/null \
-      && _slog "INFO" "listener restarted" \
-      || _slog "WARN" "listener restart failed — will retry next cycle"
+  if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+    return 0
   fi
+  # port already bound — ncat still alive but PID file stale
+  if ss -tlnp 2>/dev/null | grep -q ":${LDOWN_PORT:-51821} "; then
+    _slog "WARN" "listener PID stale but port ${LDOWN_PORT:-51821} still bound — skipping restart"
+    # try to recover PID file from running ncat
+    local real_pid
+    real_pid="$(ss -tlnp 2>/dev/null | grep ":${LDOWN_PORT:-51821} " | grep -oP 'pid=\K[0-9]+' | head -1)"
+    if [[ -n "${real_pid}" ]]; then
+      printf '%s' "${real_pid}" > "${pidfile}" 2>/dev/null || true
+      _slog "INFO" "recovered listener PID ${real_pid}"
+    fi
+    return 0
+  fi
+  _slog "WARN" "listener dead — restarting"
+  ( cmd_listener_start ) 2>/dev/null \
+    && _slog "INFO" "listener restarted" \
+    || _slog "WARN" "listener restart failed — will retry next cycle"
 }
 
 # =============================================================================
@@ -54,6 +57,11 @@ _sync_check_peer() {
   local peer_tunnel="$3"
   local peer_port="$4"
   local peer_keepalive="$5"
+
+  # skip peers that have left the mesh
+  if [[ -f /run/ldown/left_peers ]] && grep -qx "$1" /run/ldown/left_peers 2>/dev/null; then
+    return 0
+  fi
 
   local pubfile="${KEY_DIR}/${peer_name}.public.key"
   local peer_conf="${PEER_DIR}/peer-${peer_tunnel}.conf"
@@ -102,6 +110,7 @@ _sync_check_peer() {
     endpoint "${peer_ip}:${peer_port}"
   )
   [[ -n "${peer_keepalive}" ]] && wg_args+=(persistent-keepalive "${peer_keepalive}")
+  [[ -f "${KEY_DIR}/mesh.psk" ]] && wg_args+=(preshared-key "${KEY_DIR}/mesh.psk")
   "${wg_args[@]}" 2>/dev/null || {
     _slog "WARN" "wg set failed for ${peer_name}"
     return 1
@@ -132,7 +141,7 @@ _sync_fetch_pubkey_from_czar() {
   sig=$(sign_msg "${payload}")
   local result
   result=$(printf '%s\n' "${sig} ${payload}" \
-    | ncat --wait 5 "${czar_ip}" "${LDOWN_PORT}" 2>/dev/null) || return 1
+    | ncat --ssl --wait 5 "${czar_ip}" "${LDOWN_PORT}" 2>/dev/null) || return 1
   is_valid_wg_key "${result}" || return 1
   printf '%s\n' "${result}"
 }
@@ -152,15 +161,17 @@ _sync_rejoin_if_needed() {
   sig=$(sign_msg "${payload}")
   local response
   response=$(printf '%s\n' "${sig} ${payload}" \
-    | ncat --wait 5 "${czar_ip}" "${LDOWN_PORT}" 2>/dev/null) || true
+    | ncat --ssl --wait 5 "${czar_ip}" "${LDOWN_PORT}" 2>/dev/null) || true
 
   if [[ "${response}" != "PONG"* ]]; then
     _slog "WARN" "czar doesn't know us — re-joining"
-    local join_payload="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pub}"
+    local join_raw="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pub}"
+    local join_payload
+    join_payload="$(make_payload "${join_raw}")"
     local join_sig
     join_sig=$(sign_msg "${join_payload}")
     printf '%s\n' "${join_sig} ${join_payload}" \
-      | ncat --wait 5 "${czar_ip}" "${LDOWN_PORT}" &>/dev/null || true
+      | ncat --ssl --wait 5 "${czar_ip}" "${LDOWN_PORT}" &>/dev/null || true
     _slog "INFO" "re-JOIN sent to czar"
   fi
 }
@@ -206,8 +217,23 @@ cmd_sync_start() {
     while true; do
       sleep "${SYNC_INTERVAL}"
 
-      # source fresh mesh state each cycle
-      source_if_exists "${MESH_CONF}" 2>/dev/null || continue
+      # source fresh mesh state each cycle — parse whitelist only
+      local key val
+      while IFS='=' read -r key val; do
+        val="${val%\"}"
+        val="${val#\"}"
+        case "${key}" in
+          MY_NAME)        MY_NAME="${val}" ;;
+          MY_IP)          MY_IP="${val}" ;;
+          MY_TUNNEL_IP)   MY_TUNNEL_IP="${val}" ;;
+          MY_IS_CZAR)     MY_IS_CZAR="${val}" ;;
+          CZAR_IP)        CZAR_IP="${val}" ;;
+          CZAR_TUNNEL_IP) CZAR_TUNNEL_IP="${val}" ;;
+          WG_PORT)        WG_PORT="${val}" ;;
+          LDOWN_PORT)     LDOWN_PORT="${val}" ;;
+          SUBNET)         SUBNET="${val}" ;;
+        esac
+      done < "${MESH_CONF}" 2>/dev/null || continue
       roster_load "${ROSTER_CONF}" 2>/dev/null || continue
 
       # skip if WG interface is down

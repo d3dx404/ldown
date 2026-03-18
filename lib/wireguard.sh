@@ -41,6 +41,21 @@ wg_generate_keypair() {
   printf '%s\n%s\n' "$priv" "$pub"
 }
 
+# generate a named keypair and write to files
+# usage: wg_generate_keypair_named <name> <keydir>
+wg_generate_keypair_named() {
+  local name="$1"
+  local keydir="$2"
+  local priv pub
+  read -r priv pub < <(wg_generate_keypair)
+  mkdir -p "${keydir}"
+  printf '%s\n' "${priv}" > "${keydir}/${name}.private.key"
+  chmod 600 "${keydir}/${name}.private.key"
+  printf '%s\n' "${pub}" > "${keydir}/${name}.public.key"
+  chmod 644 "${keydir}/${name}.public.key"
+  debug "named keypair written for ${name}"
+}
+
 # ── atomic config writers ──────────────────────────────────
 # all writers use mktemp + chmod 600 + mv — never partial writes.
 # private key is written but never logged.
@@ -99,6 +114,10 @@ EOF
 
   if [[ -n "${keepalive}" && "${keepalive}" != "0" ]]; then
     printf 'PersistentKeepalive = %s\n' "${keepalive}" >> "$tmp"
+  fi
+  local psk_file="${KEY_DIR:-/etc/ldown/keys}/mesh.psk"
+  if [[ -f "${psk_file}" ]]; then
+    printf 'PresharedKey = %s\n' "$(cat "${psk_file}")" >> "$tmp"
   fi
 
   chmod 600 "$tmp"

@@ -18,14 +18,6 @@ source "${_MESH_DIR}/roster.sh"
 # internal helpers
 # =============================================================================
 
-# sign a control plane message with the cluster token
-# usage: sign_msg <payload>  →  sha256(payload + CLUSTER_TOKEN)
-# the token never appears on the wire; the sig is bound to this exact message
-sign_msg() {
-  local msg="$1"
-  printf '%s' "${msg}${CLUSTER_TOKEN}" | sha256sum | awk '{print $1}'
-}
-
 # serve this node's public key on LDOWN_PORT for exactly one connection
 # used during mesh start bootstrap before listener.sh exists
 # returns the background PID
@@ -102,6 +94,27 @@ cmd_mesh_init() {
   banner
   require_root
 
+  # parse flags
+  local OPT_IP
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ip)
+        OPT_IP="${2:-}"
+        shift 2
+        ;;
+      --bootstrap)
+        OPT_BOOTSTRAP=true
+        shift
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  # export OPT_IP so roster.sh can use it for IP detection
+  export OPT_IP
+
   step "checking dependencies"
   check_dependency wg openssl ncat
 
@@ -156,29 +169,168 @@ cmd_mesh_init() {
   { read -r my_pubkey < "${pubfile}"; } 2>/dev/null || true
   [[ -n "${my_pubkey}" ]] || fatal "pubkey is empty — check wireguard-tools"
 
-  # ── TLS cert ────────────────────────────────────────────
-  step "TLS certificate"
-
-  if [[ -f "${TLS_CERT}" && -f "${TLS_KEY}" ]]; then
-    status_ok "TLS cert exists" "${TLS_CERT} — skipping"
+  # ── node signing keypair ────────────────────────────────
+  local node_key="${KEY_DIR}/${MY_NAME}-node.key"
+  local node_pub="${KEY_DIR}/${MY_NAME}-node.pub"
+  if [[ ! -f "${node_key}" ]]; then
+    step "generating node signing keypair"
+    openssl genpkey -algorithm ed25519 -out "${node_key}" 2>/dev/null
+    openssl pkey -in "${node_key}" -pubout -out "${node_pub}" 2>/dev/null
+    chmod 600 "${node_key}"
+    chmod 644 "${node_pub}"
+    status_ok "node signing keypair" "${node_pub}"
   else
-    must "generate TLS cert" openssl req -x509 -newkey rsa:4096 \
-      -keyout "${TLS_KEY}" \
-      -out    "${TLS_CERT}" \
-      -days   "${TLS_CERT_DAYS}" \
-      -nodes  \
-      -subj   "/CN=ldown-${MY_NAME}"
+    status_ok "node signing keypair exists" "${node_key} — skipping"
+  fi
 
-    must "secure TLS key" chmod 600 "${TLS_KEY}"
-    status_ok "TLS cert written" "${TLS_CERT}"
-    status_ok "TLS key written"  "${TLS_KEY}"
+  # ── czar signing keypair ────────────────────────────────
+  if [[ "${MY_IS_CZAR}" == "true" ]]; then
+    local czar_key="/etc/ldown/keys/czar-control.key"
+    local czar_pub="/etc/ldown/keys/czar-control.pub"
+    if [[ ! -f "${czar_key}" ]]; then
+      step "generating czar signing keypair"
+      openssl genpkey -algorithm ed25519 -out "${czar_key}" 2>/dev/null
+      openssl pkey -in "${czar_key}" -pubout -out "${czar_pub}" 2>/dev/null
+      chmod 600 "${czar_key}"
+      chmod 644 "${czar_pub}"
+      status_ok "czar signing keypair" "${czar_pub}"
+    else
+      status_ok "czar signing keypair exists" "${czar_key} — skipping"
+    fi
+  fi
+
+  # ── Certificate Authority (czar only) ───────────────────
+  local ca_key="${KEY_DIR}/ca.key"
+  local ca_cert="${KEY_DIR}/ca.cert"
+  if [[ "${MY_IS_CZAR}" == "true" ]]; then
+    step "certificate authority"
+    if [[ -f "${ca_key}" && -f "${ca_cert}" ]]; then
+      status_ok "CA exists" "${ca_cert} — skipping"
+    else
+      must "generate CA key" openssl ecparam -genkey -name prime256v1 -noout \
+        -out "${ca_key}" 2>/dev/null
+      must "secure CA key" chmod 600 "${ca_key}"
+      must "generate CA cert" openssl req -x509 -new \
+        -key "${ca_key}" \
+        -out "${ca_cert}" \
+        -days 3650 \
+        -sha256 \
+        -subj "/CN=ldown-ca/O=ldown"
+      must "secure CA cert" chmod 644 "${ca_cert}"
+      status_ok "CA key" "${ca_key}"
+      status_ok "CA cert" "${ca_cert}"
+    fi
+  fi
+
+  # ── node TLS certificate ────────────────────────────────
+  step "TLS certificate"
+  local tls_key="${TLS_KEY}"
+  local tls_cert="${TLS_CERT}"
+  local tls_csr="${KEY_DIR}/${MY_NAME}.csr"
+
+  if [[ -f "${tls_cert}" && -f "${tls_key}" ]]; then
+    # check if cert is CA-signed or self-signed
+    local issuer
+    issuer="$(openssl x509 -in "${tls_cert}" -noout -issuer 2>/dev/null || true)"
+    if [[ "${issuer}" == *"ldown-ca"* ]]; then
+      status_ok "TLS cert exists" "CA-signed — skipping"
+    else
+      info "self-signed cert found — will be replaced when czar signs it"
+      status_ok "TLS cert exists" "${tls_cert} (self-signed)"
+    fi
+  else
+    must "generate TLS key" openssl ecparam -genkey -name prime256v1 -noout \
+      -out "${tls_key}" 2>/dev/null
+    must "secure TLS key" chmod 600 "${tls_key}"
+    status_ok "TLS key" "${tls_key}"
+  fi
+
+  # generate CSR (always, so it's ready for czar signing)
+  must "generate CSR" openssl req -new \
+    -key "${tls_key}" \
+    -out "${tls_csr}" \
+    -subj "/CN=ldown-${MY_NAME}/O=ldown"
+  status_ok "CSR ready" "${tls_csr}"
+
+  # if czar, self-sign immediately with CA
+  if [[ "${MY_IS_CZAR}" == "true" && -f "${ca_key}" ]]; then
+    must "sign node cert with CA" openssl x509 -req \
+      -in "${tls_csr}" \
+      -CA "${ca_cert}" \
+      -CAkey "${ca_key}" \
+      -CAcreateserial \
+      -out "${tls_cert}" \
+      -days 7 2>/dev/null
+    status_ok "TLS cert signed" "7-day cert by CA"
+  elif [[ ! -f "${tls_cert}" ]]; then
+    # non-czar without cert: generate self-signed placeholder
+    must "generate self-signed cert" openssl req -x509 \
+      -key "${tls_key}" \
+      -out "${tls_cert}" \
+      -days 7 \
+      -sha256 \
+      -subj "/CN=ldown-${MY_NAME}/O=ldown"
+    status_ok "TLS cert" "self-signed placeholder (czar will sign at JOIN)"
   fi
 
   local tls_fingerprint
-  tls_fingerprint="$(openssl x509 -in "${TLS_CERT}" \
+  tls_fingerprint="$(openssl x509 -in "${tls_cert}" \
     -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2)"
-  [[ -n "${tls_fingerprint}" ]] || fatal "failed to extract TLS fingerprint from ${TLS_CERT}"
+  [[ -n "${tls_fingerprint}" ]] || fatal "failed to extract TLS fingerprint"
   status_ok "fingerprint" "${tls_fingerprint}"
+
+  # compute CA fingerprint
+  local ca_fp=""
+  if [[ -f "${ca_cert}" ]]; then
+    ca_fp="$(openssl x509 -in "${ca_cert}" \
+      -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2)"
+  fi
+
+  # compute czar signing key fingerprint if available
+  local czar_fp=""
+  if [[ "${MY_IS_CZAR}" == "true" ]]; then
+    czar_fp="$(openssl pkey \
+      -in /etc/ldown/keys/czar-control.pub \
+      -pubin -outform DER 2>/dev/null \
+      | sha256sum | awk '{print $1}')"
+  elif [[ -f "/etc/ldown/keys/czar-control.pub" ]]; then
+    czar_fp="$(openssl pkey \
+      -in /etc/ldown/keys/czar-control.pub \
+      -pubin -outform DER 2>/dev/null \
+      | sha256sum | awk '{print $1}')"
+  fi
+
+  # extract node signing public key for mesh.conf
+  local node_signing_pub
+  node_signing_pub="$(cat "${node_pub}" 2>/dev/null | tr -d '\n')"
+
+  # ── optional mesh passphrase → WireGuard PSK ───────────
+  local psk_file="${KEY_DIR}/mesh.psk"
+  if [[ ! -f "${psk_file}" && "${OPT_BOOTSTRAP:-false}" != "true" ]]; then
+    step "mesh passphrase (optional)"
+    info "a shared passphrase adds post-quantum protection to the WireGuard tunnel"
+    info "press Enter to skip, or type a passphrase (all nodes must use the same one)"
+    printf '\n  passphrase: '
+    stty -echo 2>/dev/null || true
+    local mesh_pass=""
+    read -r mesh_pass
+    printf '\n  confirm:    '
+    local mesh_pass2=""
+    read -r mesh_pass2
+    stty echo 2>/dev/null || true
+    printf '\n'
+    if [[ -n "${mesh_pass}" && "${mesh_pass}" == "${mesh_pass2}" ]]; then
+      printf '%s' "${mesh_pass}" | openssl dgst -sha256 -binary | base64 > "${psk_file}"
+      chmod 600 "${psk_file}"
+      status_ok "PSK derived" "${psk_file}"
+    elif [[ -n "${mesh_pass}" ]]; then
+      warn "passphrases did not match — skipping PSK"
+    else
+      info "no passphrase — skipping PSK"
+    fi
+  else
+    status_ok "PSK exists" "${psk_file} — skipping"
+  fi
 
   # ── write mesh.conf ─────────────────────────────────────
   step "writing mesh.conf"
@@ -200,6 +352,9 @@ WG_PORT=${WG_PORT}
 LDOWN_PORT=${LDOWN_PORT}
 SUBNET=${SUBNET}
 TLS_FINGERPRINT=\"${tls_fingerprint}\"
+CA_FINGERPRINT=\"${ca_fp}\"
+CZAR_PUBKEY_FP=\"${czar_fp}\"
+NODE_SIGNING_PUBKEY=\"${node_signing_pub}\"
 WG_PUBKEY=\"${my_pubkey}\"
 INIT_TIME=\"${ts}\""
 
@@ -217,11 +372,215 @@ INIT_TIME=\"${ts}\""
     status_ok "log ready" "${lf}"
   done
 
+  if [[ "${OPT_BOOTSTRAP:-false}" == "true" ]]; then
+    success "init complete — ${MY_NAME} — continuing bootstrap"
+  else
+    success "init complete — ${MY_NAME} is ready"
+    printf '\n'
+    info "next step: ldown mesh start"
+  fi
   printf '\n'
-  success "init complete — ${MY_NAME} is ready"
-  printf '\n'
-  info "next step: ldown mesh start"
-  printf '\n'
+
+  # ── bootstrap: fetch bundle + ticket + auto-join ────────────────────────
+  if [[ "${OPT_BOOTSTRAP:-false}" == "true" ]]; then
+    local bport="${BOOTSTRAP_PORT:-51822}"
+    local czar_ip="${CZAR_IP}"
+    [[ -n "${czar_ip}" ]] || fatal "no czar IP found in roster — cannot bootstrap"
+
+    step "bootstrap from czar"
+    info "contacting ${czar_ip}:${bport}"
+
+    local bresp
+    bresp="$(printf 'BOOTSTRAP|%s\n' "${MY_NAME}" | ncat --wait 10 "${czar_ip}" "${bport}" 2>/dev/null)" || \
+      fatal "could not reach czar bootstrap at ${czar_ip}:${bport}"
+
+    [[ -n "${bresp}" ]] || fatal "empty response from czar bootstrap"
+
+    local bstatus
+    bstatus="$(head -1 <<< "${bresp}")"
+    [[ "${bstatus}" == "BOOTSTRAP_OK" ]] || fatal "bootstrap rejected: ${bstatus}"
+
+    # extract ticket
+    local bticket=""
+    bticket="$(grep '^TICKET:' <<< "${bresp}" | head -1 | cut -d: -f2-)"
+    if [[ -n "${bticket}" ]]; then
+      mkdir -p /etc/ldown/tickets 2>/dev/null || true
+      printf '%s\n' "${bticket}" > "/etc/ldown/tickets/${MY_NAME}"
+      chmod 600 "/etc/ldown/tickets/${MY_NAME}"
+      status_ok "ticket installed" "${MY_NAME}"
+    fi
+
+    # extract and save bundle
+    local bbundle_b64=""
+    bbundle_b64="$(grep '^BUNDLE_B64:' <<< "${bresp}" | head -1 | cut -d: -f2-)"
+    if [[ -n "${bbundle_b64}" ]]; then
+      local btmpfile
+      btmpfile="$(mktemp /tmp/ldown-bootstrap-bundle.XXXXXX)"
+      printf '%s' "${bbundle_b64}" | base64 -d > "${btmpfile}" 2>/dev/null
+      status_ok "bundle received" "$(wc -c < "${btmpfile}") bytes"
+
+      # import bundle using existing logic
+      info "importing bundle — enter the export passphrase"
+      export _BOOTSTRAP_ACTIVE=true
+      export LDOWN_YES=true
+      cmd_mesh_import "${btmpfile}"
+      rm -f "${btmpfile}"
+    else
+      fatal "no bundle in bootstrap response"
+    fi
+
+    # auto-join
+    step "joining mesh"
+    cmd_mesh_join
+  fi
+}
+
+# =============================================================================
+# _mesh_bootstrap_serve
+# =============================================================================
+# temporary plaintext listener for onboarding new nodes
+# serves encrypted export bundle + auto-created ticket
+# runs on BOOTSTRAP_PORT, stopped when mesh restarts without --bootstrap
+# =============================================================================
+_mesh_bootstrap_serve() {
+  [[ "${MY_IS_CZAR:-false}" == "true" ]] || { warn "only czar can serve bootstrap"; return 1; }
+
+  local bport="${BOOTSTRAP_PORT:-51822}"
+  local timeout="${OPT_BOOTSTRAP_TIME:-120}"
+  local bundle=""
+
+  bundle="$(find /home -maxdepth 3 -name 'ldown-export-*.tar.gz.enc' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)"
+  if [[ -z "${bundle}" ]]; then
+    bundle="$(find /root -maxdepth 3 -name 'ldown-export-*.tar.gz.enc' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)"
+  fi
+  if [[ -z "${bundle}" ]]; then
+    warn "no export bundle found — run: ldown mesh export first"
+    return 1
+  fi
+
+  local bundle_b64
+  bundle_b64="$(base64 -w0 < "${bundle}")"
+  local bundle_size=${#bundle_b64}
+
+  local total_peers=0
+  local i
+  for i in "${!PEER_NAMES[@]}"; do
+    [[ "${PEER_NAMES[$i]}" == "${MY_NAME}" ]] && continue
+    total_peers=$((total_peers + 1))
+  done
+
+  local bootstrap_tracker="/run/ldown/bootstrap_joined"
+  local bootstrap_meta="/run/ldown/bootstrap_meta"
+  : > "${bootstrap_tracker}"
+  printf 'start=%s\ntimeout=%s\ntotal=%s\n' "$(date +%s)" "${timeout}" "${total_peers}" > "${bootstrap_meta}"
+
+  local bpidfile="/run/ldown/bootstrap.pid"
+  if [[ -f "${bpidfile}" ]]; then
+    local existing_bpid
+    { read -r existing_bpid < "${bpidfile}"; } 2>/dev/null
+    if [[ -n "${existing_bpid}" ]] && kill -0 "${existing_bpid}" 2>/dev/null; then
+      local joined=0
+      [[ -f "${bootstrap_tracker}" ]] && joined=$(sort -u "${bootstrap_tracker}" | wc -l)
+      info "bootstrap already running (pid ${existing_bpid}) — ${joined}/${total_peers} joined"
+      info "monitor progress: ldown mesh watch"
+      return 0
+    fi
+    rm -f "${bpidfile}"
+  fi
+
+  local bhandler
+  bhandler="$(mktemp /tmp/ldown-bootstrap.XXXXXX)"
+  cat > "${bhandler}" <<BEOF
+#!/usr/bin/env bash
+read -r -t 10 line || exit 0
+line="\${line%%\$'\r'}"
+[[ -z "\${line}" ]] && exit 0
+
+IFS='|' read -ra bf <<< "\${line}"
+action="\${bf[0]:-}"
+bname="\${bf[1]:-}"
+
+if [[ "\${action}" != "BOOTSTRAP" || -z "\${bname}" ]]; then
+  printf 'ERROR invalid bootstrap request\n'
+  exit 1
+fi
+
+roster_found=false
+while IFS= read -r rline; do
+  [[ "\${rline}" =~ --name[[:space:]]+([^[:space:]]+) ]] && {
+    [[ "\${BASH_REMATCH[1]}" == "\${bname}" ]] && roster_found=true
+  }
+done < "${ROSTER_CONF}"
+
+if [[ "\${roster_found}" != "true" ]]; then
+  printf 'ERROR %s not in roster\n' "\${bname}"
+  echo "[WARN] [SECURITY] bootstrap rejected — \${bname} not in roster" >> "${LOG_LISTENER}"
+  exit 1
+fi
+
+ticket_dir="/etc/ldown/tickets"
+ticket_file="\${ticket_dir}/\${bname}"
+mkdir -p "\${ticket_dir}" 2>/dev/null || true
+if [[ ! -f "\${ticket_file}" ]]; then
+  token="\$(head -c32 /dev/urandom | base64 -w0)"
+  printf '%s\n' "\${token}" > "\${ticket_file}"
+  chmod 600 "\${ticket_file}"
+  echo "[INFO] bootstrap: auto-created ticket for \${bname}" >> "${LOG_LISTENER}"
+fi
+ticket=""
+read -r ticket < "\${ticket_file}" 2>/dev/null
+
+printf 'BOOTSTRAP_OK\n'
+printf 'TICKET:%s\n' "\${ticket}"
+printf 'BUNDLE_SIZE:%s\n' "${bundle_size}"
+printf 'BUNDLE_B64:%s\n' "${bundle_b64}"
+printf 'END_BOOTSTRAP\n'
+
+printf '%s\n' "\${bname}" >> "${bootstrap_tracker}"
+echo "[INFO] bootstrap: served bundle + ticket to \${bname}" >> "${LOG_LISTENER}"
+BEOF
+  chmod 700 "${bhandler}"
+
+  (
+    trap "fuser -k '${bport}/tcp' 2>/dev/null || true; rm -f '${bhandler}' '${bpidfile}'; echo 'closed' >> '${bootstrap_meta}'" EXIT
+    local start_ts
+    start_ts=$(date +%s)
+
+    while true; do
+      local now_ts elapsed
+      now_ts=$(date +%s)
+      elapsed=$(( now_ts - start_ts ))
+      if (( elapsed >= timeout )); then
+        local joined=0
+        [[ -f "${bootstrap_tracker}" ]] && joined=$(sort -u "${bootstrap_tracker}" | wc -l)
+        echo "[*] bootstrap timeout (${timeout}s) — ${joined}/${total_peers} nodes onboarded" >> "${LOG_LISTENER}"
+        break
+      fi
+
+      if [[ -f "${bootstrap_tracker}" ]]; then
+        local joined
+        joined=$(sort -u "${bootstrap_tracker}" | wc -l)
+        if (( joined >= total_peers )); then
+          echo "[+] all ${total_peers} peers bootstrapped — closing bootstrap listener" >> "${LOG_LISTENER}"
+          break
+        fi
+      fi
+
+      ncat -l "${MY_IP}" "${bport}" \
+        --sh-exec "bash ${bhandler}" \
+        -w 10 \
+        2>/dev/null &
+      local ncat_pid=$!
+      wait ${ncat_pid} 2>/dev/null || true
+    done
+  ) &
+  local bpid=$!
+  echo "${bpid}" > "${bpidfile}"
+
+  status_ok "bootstrap listener" "pid ${bpid} on ${MY_IP}:${bport}"
+  info "waiting for ${total_peers} peers — auto-closes after all join or ${timeout}s"
+  warn "override timeout: ldown mesh start --bootstrap --time <seconds>"
+  info "monitor progress: ldown mesh watch"
 }
 
 # =============================================================================
@@ -291,23 +650,6 @@ cmd_mesh_start() {
   if [[ "${MY_IS_CZAR}" != "true" ]]; then
     fatal "this node is not the czar — use: ldown mesh join"
   fi
-  
-  info "peers to connect: ${#PEER_IPS[@]}"
-
-  step "serving public key for bootstrap"
-  local serve_pid
-  local pubfile="${KEY_DIR}/${MY_NAME}.public.key"
-  ncat -l "${MY_IP}" "${LDOWN_PORT}" -k --sh-exec "cat ${pubfile}" \
-    &>/tmp/ldown_serve.out &
-  serve_pid=$!
-  trap 'kill "${serve_pid}" 2>/dev/null || true' EXIT
-  sleep 0.5
-  if ! kill -0 "${serve_pid}" 2>/dev/null; then
-    warn "key server failed to start — check /tmp/ldown_serve.out"
-    cat /tmp/ldown_serve.out
-    fatal "cannot continue without bootstrap key server"
-  fi
-  status_ok "key server started" "pid ${serve_pid} on ${MY_IP}:${LDOWN_PORT}"
 
   step "bringing up WireGuard interface"
 
@@ -324,137 +666,21 @@ cmd_mesh_start() {
   wg_sync "${WG_INTERFACE}" "${WG_DIR}/${WG_INTERFACE}.conf"
   status_ok "interface up" "${WG_INTERFACE} — ${MY_TUNNEL_IP}/24"
 
-  step "connecting to peers"
-
-  local failed=0
-  declare -A _connected_pubkeys
-
-  local i
-  for i in $(_mesh_sorted_peer_indices); do
-    local peer_ip="${PEER_IPS[$i]}"
-    local peer_tunnel="${PEER_TUNNEL_IPS[$i]}"
-    local peer_name="${PEER_NAMES[$i]}"
-    local peer_port="${PEER_PORTS[$i]}"
-    local peer_keepalive="${PEER_KEEPALIVES[$i]:-}"
-
-    printf '\n'
-    info "connecting to ${peer_name} (${peer_ip})"
-
-    local peer_pubkey
-    peer_pubkey="$(_mesh_fetch_pubkey_retry "${peer_ip}" "${LDOWN_PORT}")" || {
-      status_fail "${peer_name}" "could not fetch public key from ${peer_ip}:${LDOWN_PORT} after 10s"
-      failed=$(( failed + 1 ))
-      continue
-    }
-
-    is_valid_wg_key "${peer_pubkey}" || {
-      status_fail "${peer_name}" "invalid public key received from ${peer_ip}"
-      failed=$(( failed + 1 ))
-      continue
-    }
-
-    wg_write_peer \
-      "${PEER_DIR}/peer-${peer_tunnel}.conf" \
-      "${peer_pubkey}" \
-      "${peer_tunnel}/32" \
-      "${peer_ip}:${peer_port}" \
-      "${peer_keepalive}"
-
-    local wg_args=(
-      wg set "${WG_INTERFACE}"
-      peer "${peer_pubkey}"
-      allowed-ips "${peer_tunnel}/32"
-      endpoint "${peer_ip}:${peer_port}"
-    )
-    [[ -n "${peer_keepalive}" ]] && wg_args+=(persistent-keepalive "${peer_keepalive}")
-
-    must "add peer ${peer_name}" "${wg_args[@]}"
-    _connected_pubkeys[$i]="${peer_pubkey}"
-    status_ok "${peer_name}" "${peer_tunnel} via ${peer_ip}:${peer_port}"
-  done
-
-  kill "${serve_pid}" 2>/dev/null || true
-  wait "${serve_pid}" 2>/dev/null || true
-
-  step "assembling final config"
-  wg_assemble_config "${WG_DIR}" "${WG_INTERFACE}"
-  status_ok "config written" "${WG_DIR}/${WG_INTERFACE}.conf"
-
-step "verifying handshakes"
-  local confirmed=0
-  local pids=()
-  local tmpdir
-  tmpdir=$(mktemp -d)
-
-  for i in "${!_connected_pubkeys[@]}"; do
-    local peer_name="${PEER_NAMES[$i]}"
-    local peer_pubkey="${_connected_pubkeys[$i]}"
-    (
-      for (( attempt = 1; attempt <= 20; attempt++ )); do
-        if _mesh_check_peer_handshake "${WG_INTERFACE}" "${peer_pubkey}"; then
-          echo "ok" > "${tmpdir}/${peer_name}"
-          exit 0
-        fi
-        sleep 1
-      done
-      echo "fail" > "${tmpdir}/${peer_name}"
-    ) &
-    pids+=($!)
-  done
-
-  # wait for all background checks
-  for pid in "${pids[@]}"; do
-    wait "${pid}" 2>/dev/null || true
-  done
-
-  for i in "${!_connected_pubkeys[@]}"; do
-    local peer_name="${PEER_NAMES[$i]}"
-    if [[ "$(cat "${tmpdir}/${peer_name}" 2>/dev/null)" == "ok" ]]; then
-      status_ok "${peer_name}" "handshake confirmed"
-      confirmed=$(( confirmed + 1 ))
-    else
-      status_warn "${peer_name}" "no handshake after 20s"
-    fi
-  done
-  rm -rf "${tmpdir}"
-
-  printf '\n'
-  divider
-  status_ok "peers connected" "${confirmed}/${#PEER_IPS[@]}"
-  [[ "${failed}" -gt 0 ]] && status_warn "peers unreachable" "${failed}"
-  divider
-  printf '\n'
-
-  (( confirmed == 0 && ${#PEER_IPS[@]} > 0 )) && \
-    fatal "no peers connected — check all nodes have run: ldown mesh init"
-
-  # ── register pubkeys with czar ───────────────────────────────────────
-  # mesh start does p2p bootstrap — czar doesn't know pubkeys yet.
-  # non-czar nodes send JOIN so the czar can build its peer list.
-  # czar stores all bootstrapped pubkeys it just exchanged directly.
-  if [[ "${MY_IS_CZAR}" != "true" ]]; then
-    local my_pub
-    read -r my_pub < "${pubfile}"
-    local join_payload="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pub}"
-    local join_sig
-    join_sig="$(sign_msg "${join_payload}")"
-    printf '%s\n' "${join_sig} ${join_payload}" \
-      | ncat --wait 2 "${CZAR_IP}" "${LDOWN_PORT}" >/dev/null 2>&1 || \
-      warn "could not register pubkey with czar — sync will retry"
-  else
-    for i in "${!_connected_pubkeys[@]}"; do
-      local pname="${PEER_NAMES[$i]}"
-      local ppub="${_connected_pubkeys[$i]}"
-      printf '%s\n' "${ppub}" > "${KEY_DIR}/${pname}.public.key"
-    done
-  fi
-
+  export LDOWN_QUIET=true
   source "${BASH_SOURCE[0]%/*}/listener.sh"
   cmd_listener_start
   source "${BASH_SOURCE[0]%/*}/sync.sh"
   cmd_sync_start
+  export LDOWN_QUIET=false
   success "mesh started — ${MY_NAME} is live"
   printf '\n'
+  if [[ "${OPT_BOOTSTRAP:-false}" == "true" ]]; then
+    _mesh_bootstrap_serve
+  fi
+  if [[ "${OPT_WATCH:-false}" == "true" ]]; then
+    cmd_mesh_watch
+  fi
+  exit 0
 }
 
 # =============================================================================
@@ -471,9 +697,24 @@ step "verifying handshakes"
 # =============================================================================
 
 cmd_mesh_join() {
-  banner
+  [[ "${_BOOTSTRAP_ACTIVE:-false}" == "true" ]] || banner
   require_root
   check_dependency wg ncat
+
+  # check for existing join process
+  if [[ "${_BOOTSTRAP_ACTIVE:-false}" != "true" ]]; then
+  local existing_join
+  existing_join=$(pgrep -f "ldown mesh join" 2>/dev/null | \
+    grep -v "^$$\$" | head -1)
+  if [[ -n "${existing_join}" ]]; then
+    warn "mesh join already running (pid ${existing_join})"
+    warn "running multiple joins simultaneously causes listener conflicts"
+    confirm "kill existing join process and start fresh?" || \
+      { info "join cancelled"; exit 1; }
+    kill "${existing_join}" 2>/dev/null || true
+    sleep 1
+  fi
+  fi
 
   step "verifying init"
 
@@ -523,10 +764,27 @@ cmd_mesh_join() {
   step "contacting czar"
   info "sending identity to czar at ${CZAR_IP}:${LDOWN_PORT}"
 
+  local node_signing_pub
+  node_signing_pub="$(openssl pkey \
+    -in /etc/ldown/keys/${MY_NAME}-node.pub \
+    -pubin -outform DER 2>/dev/null | base64 -w0)"
+
   local peer_list
-  local _join_payload="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pubkey}"
+  local csr_b64=""
+  local csr_file="${KEY_DIR}/${MY_NAME}.csr"
+  if [[ -f "${csr_file}" ]]; then
+    csr_b64="$(base64 -w0 < "${csr_file}")"
+  fi
+  local ticket=""
+  local ticket_file="/etc/ldown/tickets/${MY_NAME}"
+  if [[ -f "${ticket_file}" ]]; then
+    read -r ticket < "${ticket_file}"
+  fi
+  local _join_raw="JOIN ${MY_NAME} ${MY_TUNNEL_IP} ${MY_IP} ${my_pubkey} ${node_signing_pub} ${csr_b64} ${ticket:-NONE}"
+  local _join_payload
+  _join_payload="$(make_payload "${_join_raw}")"
   peer_list="$(printf '%s\n' "$(sign_msg "${_join_payload}") ${_join_payload}" \
-    | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)" || \
+    | ncat --ssl "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)" || \
     fatal "could not reach czar at ${CZAR_IP}:${LDOWN_PORT} — is the mesh running?"
 
   [[ -n "${peer_list}" ]] || \
@@ -542,9 +800,24 @@ cmd_mesh_join() {
   while IFS= read -r peer_line; do
     [[ -z "${peer_line}" ]] && continue
     [[ "${peer_line}" =~ ^ERROR ]] && fatal "czar rejected join: ${peer_line}"
+    # check for signed cert from czar
+    if [[ "${peer_line}" =~ ^CERT: ]]; then
+      local cert_b64="${peer_line#CERT:}"
+      printf '%s' "${cert_b64}" | base64 -d > "${TLS_CERT}" 2>/dev/null
+      chmod 644 "${TLS_CERT}"
+      status_ok "TLS cert" "CA-signed cert installed by czar"
+      continue
+    fi
+    if [[ "${peer_line}" =~ ^CA: ]]; then
+      local ca_b64="${peer_line#CA:}"
+      printf '%s' "${ca_b64}" | base64 -d > "${KEY_DIR}/ca.cert" 2>/dev/null
+      chmod 644 "${KEY_DIR}/ca.cert"
+      status_ok "CA cert" "installed from czar"
+      continue
+    fi
 
-    local peer_name peer_tunnel peer_endpoint peer_pubkey peer_keepalive
-    read -r peer_name peer_tunnel peer_endpoint peer_pubkey peer_keepalive \
+    local peer_name peer_tunnel peer_endpoint peer_pubkey peer_keepalive peer_node_pub
+    read -r peer_name peer_tunnel peer_endpoint peer_pubkey peer_keepalive peer_node_pub \
       <<< "${peer_line}"
 
     [[ "${peer_name}" == "${MY_NAME}" ]] && continue
@@ -560,6 +833,15 @@ cmd_mesh_join() {
       continue
     }
 
+    [[ "${peer_keepalive}" == "0" ]] && peer_keepalive=""
+    
+    if [[ -n "${peer_node_pub}" ]]; then
+      printf '%s' "${peer_node_pub}" | base64 -d | \
+        openssl pkey -pubin -inform DER -outform PEM \
+        -out "${KEY_DIR}/${peer_name}-node.pub" 2>/dev/null
+      chmod 644 "${KEY_DIR}/${peer_name}-node.pub"
+    fi
+
     wg_write_peer \
       "${PEER_DIR}/peer-${peer_tunnel}.conf" \
       "${peer_pubkey}" \
@@ -574,6 +856,7 @@ cmd_mesh_join() {
       endpoint "${peer_endpoint}"
     )
     [[ -n "${peer_keepalive:-}" ]] && wg_args+=(persistent-keepalive "${peer_keepalive}")
+    [[ -f "${KEY_DIR}/mesh.psk" ]] && wg_args+=(preshared-key "${KEY_DIR}/mesh.psk")
 
     must "add peer ${peer_name}" "${wg_args[@]}"
     _joined_pubkeys["${peer_name}"]="${peer_pubkey}"
@@ -600,7 +883,7 @@ cmd_mesh_join() {
       fi
       sleep 1
     done
-    [[ $attempt -gt 20 ]] && status_warn "${peer_name}" "no handshake after 20s — may still converge"
+    [[ $attempt -gt 20 ]] && status_warn "${peer_name}" "no handshake yet — sync loop will connect within 30s"
   done
 
   printf '\n'
@@ -609,6 +892,14 @@ cmd_mesh_join() {
   [[ "${failed}" -gt 0 ]] && status_warn "peers skipped" "${failed}"
   divider
   printf '\n'
+
+  if (( failed > 0 )); then
+    printf '\n'
+    info "some peers not yet reachable — this is normal during join flood"
+    info "the sync loop runs every 30s and will connect missing peers"
+    info "run: ldown mesh status --watch  to watch them come online"
+    printf '\n'
+  fi
 
   if [[ "${confirmed}" -eq 0 ]]; then
     warn "connected to 0 peers — czar may be only node, or timing issue"
@@ -622,6 +913,10 @@ cmd_mesh_join() {
 
   success "${MY_NAME} has joined the mesh"
   printf '\n'
+  if [[ "${OPT_WATCH:-false}" == "true" ]]; then
+    cmd_mesh_watch
+  fi
+  exit 0
 }
 
 # =============================================================================
@@ -667,9 +962,11 @@ cmd_mesh_leave() {
   local pubfile="${KEY_DIR}/${MY_NAME}.public.key"
   [[ -f "${pubfile}" ]] && read -r my_pubkey < "${pubfile}"
 
-  local _leave_payload="LEAVE ${MY_NAME} ${MY_TUNNEL_IP} ${my_pubkey}"
+  local _leave_raw="LEAVE ${MY_NAME} ${MY_TUNNEL_IP} ${my_pubkey}"
+  local _leave_payload
+  _leave_payload="$(make_payload "${_leave_raw}")"
   local response
-  response="$(printf '%s\n' "$(sign_msg "${_leave_payload}") ${_leave_payload}" | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)" || true
+  response="$(printf '%s\n' "$(sign_msg "${_leave_payload}") ${_leave_payload}" | ncat --ssl "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null)" || true
   
   if [[ "${response}" == *"OK"* ]]; then
     status_ok "czar notified" "${CZAR_IP}"
@@ -842,6 +1139,7 @@ cmd_mesh_recover() {
       endpoint "${peer_ip}:${peer_port}"
     )
     [[ -n "${peer_keepalive}" ]] && wg_args+=(persistent-keepalive "${peer_keepalive}")
+    [[ -f "${KEY_DIR}/mesh.psk" ]] && wg_args+=(preshared-key "${KEY_DIR}/mesh.psk")
 
     must "add peer ${peer_name}" "${wg_args[@]}"
     _recovered_pubkeys[$i]="${peer_pubkey}"
@@ -947,11 +1245,18 @@ cmd_mesh_export() {
   must "copy TLS cert" cp "${TLS_CERT}" "${stagedir}/tls.cert"
   status_ok "included" "tls.cert"
 
-  if [[ -f "${CLUSTER_PUB}" ]]; then
-    must "copy cluster.pub" cp "${CLUSTER_PUB}" "${stagedir}/cluster.pub"
-    status_ok "included" "cluster.pub"
+  local czar_pub="/etc/ldown/keys/czar-control.pub"
+  if [[ -f "${czar_pub}" ]]; then
+    cp "${czar_pub}" "${stagedir}/cluster.pub"
+    status_ok "included" "cluster.pub (czar signing key)"
   else
-    status_warn "cluster.pub" "not found — skipped"
+    fatal "czar-control.pub not found — run: ldown mesh init first"
+  fi
+
+  local psk_file="${KEY_DIR}/mesh.psk"
+  if [[ -f "${psk_file}" ]]; then
+    cp "${psk_file}" "${stagedir}/mesh.psk"
+    status_ok "included" "mesh.psk (WireGuard pre-shared key)"
   fi
 
   write_conf "${stagedir}/mesh_export.conf" "# ldown export bundle — ${ts}
@@ -1007,7 +1312,7 @@ EXPORTED_AT=${ts}"
 # =============================================================================
 
 cmd_mesh_import() {
-  banner
+  [[ "${_BOOTSTRAP_ACTIVE:-false}" == "true" ]] || banner
   require_root
   check_dependency openssl tar
 
@@ -1031,7 +1336,19 @@ cmd_mesh_import() {
   status_ok "decrypted" "ok"
 
   step "unpacking bundle"
-  must "unpack tarball" tar -xzf "${tarball}" -C "${tmpdir}"
+  must "unpack tarball" tar -xzf "${tarball}" \
+    --no-same-owner \
+    --no-same-permissions \
+    -C "${tmpdir}"
+
+  # verify no path traversal in extracted files
+  while IFS= read -r -d '' extracted_file; do
+    local real_path
+    real_path="$(realpath "${extracted_file}")"
+    if [[ "${real_path}" != "${tmpdir}"* ]]; then
+      fatal "path traversal detected in bundle: ${extracted_file}"
+    fi
+  done < <(find "${tmpdir}" -print0)
 
   local stagedir
   stagedir="$(find "${tmpdir}" -maxdepth 1 -mindepth 1 -type d | head -1)"
@@ -1052,7 +1369,21 @@ cmd_mesh_import() {
   status_ok "mesh_export.conf" "present"
   status_ok "tls.cert"         "present"
 
-  source_if_exists "${stagedir}/mesh_export.conf"
+  local import_file="${stagedir}/mesh_export.conf"
+  local key val
+  while IFS='=' read -r key val; do
+    val="${val%\"}"
+    val="${val#\"}"
+    case "${key}" in
+      CZAR_IP)         CZAR_IP="${val}" ;;
+      CZAR_TUNNEL_IP)  CZAR_TUNNEL_IP="${val}" ;;
+      LDOWN_PORT)      LDOWN_PORT="${val}" ;;
+      WG_PORT)         WG_PORT="${val}" ;;
+      SUBNET)          SUBNET="${val}" ;;
+      EXPORTED_BY)     EXPORTED_BY="${val}" ;;
+      EXPORTED_AT)     EXPORTED_AT="${val}" ;;
+    esac
+  done < "${import_file}"
   printf '\n'
   info "exported by: ${EXPORTED_BY:-unknown}"
   info "exported at: ${EXPORTED_AT:-unknown}"
@@ -1073,10 +1404,27 @@ cmd_mesh_import() {
   must "install tls.cert" cp "${stagedir}/tls.cert" "${CONFIG_DIR}/peer-bootstrap.cert"
   status_ok "installed" "${CONFIG_DIR}/peer-bootstrap.cert"
 
-  if [[ -f "${stagedir}/cluster.pub" ]]; then
-    must "install cluster.pub" cp "${stagedir}/cluster.pub" "${CLUSTER_PUB}"
-    must "secure cluster.pub"  chmod 644 "${CLUSTER_PUB}"
-    status_ok "installed" "${CLUSTER_PUB}"
+  local bundle_czar_pub="${stagedir}/cluster.pub"
+  if [[ -f "${bundle_czar_pub}" ]]; then
+    mkdir -p /etc/ldown/keys || fatal "cannot create /etc/ldown/keys"
+    cp "${bundle_czar_pub}" /etc/ldown/keys/czar-control.pub
+    chmod 644 /etc/ldown/keys/czar-control.pub
+    local czar_fp
+    czar_fp="$(openssl pkey \
+      -in /etc/ldown/keys/czar-control.pub \
+      -pubin -outform DER 2>/dev/null \
+      | sha256sum | awk '{print $1}')"
+    status_ok "czar signing key installed" "${czar_fp}"
+  else
+    fatal "cluster.pub missing from bundle — export bundle is incomplete"
+  fi
+
+  local bundle_psk="${stagedir}/mesh.psk"
+  if [[ -f "${bundle_psk}" ]]; then
+    mkdir -p /etc/ldown/keys || fatal "cannot create /etc/ldown/keys"
+    cp "${bundle_psk}" /etc/ldown/keys/mesh.psk
+    chmod 600 /etc/ldown/keys/mesh.psk
+    status_ok "PSK installed" "/etc/ldown/keys/mesh.psk"
   fi
 
   must "install mesh_export.conf" cp "${stagedir}/mesh_export.conf" \
@@ -1085,11 +1433,13 @@ cmd_mesh_import() {
 
   printf '\n'
   success "bundle imported successfully"
-  printf '\n'
-  info "next steps:"
-  printf '  1. ldown mesh init\n'
-  printf '  2. ldown mesh join\n'
-  printf '\n'
+  if [[ "${_BOOTSTRAP_ACTIVE:-false}" != "true" ]]; then
+    printf '\n'
+    info "next steps:"
+    printf '  1. ldown mesh init\n'
+    printf '  2. ldown mesh join\n'
+    printf '\n'
+  fi
 }
 
 # =============================================================================
@@ -1141,9 +1491,11 @@ cmd_mesh_reset() {
       local my_pubkey=""
       local pubfile="${KEY_DIR}/${MY_NAME}.public.key"
       [[ -f "${pubfile}" ]] && read -r my_pubkey < "${pubfile}"
-      local _reset_payload="LEAVE ${MY_NAME} ${MY_TUNNEL_IP:-} ${my_pubkey}"
+      local _reset_raw="LEAVE ${MY_NAME} ${MY_TUNNEL_IP:-} ${my_pubkey}"
+      local _reset_payload
+      _reset_payload="$(make_payload "${_reset_raw}")"
       printf '%s\n' "$(sign_msg "${_reset_payload}") ${_reset_payload}" \
-        | ncat "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null || true
+        | ncat --ssl "${CZAR_IP}" "${LDOWN_PORT}" 2>/dev/null || true
       status_ok "czar notified" "${CZAR_IP}"
     fi
   fi
@@ -1177,6 +1529,792 @@ cmd_mesh_reset() {
 }
 
 # =============================================================================
+# cmd_mesh_watch
+# =============================================================================
+# live-updating terminal dashboard — cursor-positioned in-place redraw
+# fixed UI redrawn at top, log events scroll naturally below
+# =============================================================================
+
+cmd_mesh_watch() {
+  require_root
+  check_dependency wg
+
+  if [[ ! -f "${MESH_CONF}" ]]; then
+    fatal "mesh.conf not found — run: ldown mesh init"
+  fi
+  source_if_exists "${MESH_CONF}"
+  [[ -n "${MY_NAME:-}" ]] || fatal "mesh.conf missing MY_NAME"
+  LDOWN_QUIET=true roster_load "${ROSTER_CONF}" >/dev/null 2>&1 || true
+
+  # ── trans flag palette ───────────────────────────────────
+  local T_BLUE=$'\033[38;5;117m'       # trans blue
+  local T_PINK=$'\033[38;5;218m'       # trans pink
+  local T_WHITE=$'\033[0;97m'          # bright white
+  local T_HOT=$'\033[38;5;205m'        # hot pink accent
+  local T_SKY=$'\033[38;5;153m'        # sky blue accent
+  local T_LILAC=$'\033[38;5;183m'      # lavender highlight
+  local T_ROSE=$'\033[38;5;211m'       # rose for warnings
+  local T_DIM=$'\033[2m'
+  local T_BOLD=$'\033[1m'
+  local T_ITAL=$'\033[3m'
+  local RESET=$'\033[0m'
+
+  # ── constants ────────────────────────────────────────────
+  local W=76
+  local -a SPINNER_FRAMES=('◜' '◝' '◞' '◟')
+  local -a SPINNER_COLORS=("${T_PINK}" "${T_WHITE}" "${T_BLUE}" "${T_WHITE}")
+  local spinner_idx=0
+  local watch_start_ts="${SECONDS}"
+  local iface="${WG_INTERFACE:-wg0}"
+  local sync_state_file="/run/ldown/sync.state"
+  local listener_pid_file="/run/ldown/listener.pid"
+  local sync_pid_file="/run/ldown/sync.pid"
+  local listener_log="${LOG_LISTENER:-${LOG_DIR:-/var/log/ldown}/listener.log}"
+  local sync_log="${LOG_SYNC:-${LOG_DIR:-/var/log/ldown}/sync.log}"
+  local security_log="${LOG_SECURITY:-${LOG_DIR:-/var/log/ldown}/security.log}"
+  local ping_cycle=0
+  local czar_reachable=false
+
+  # ── trans gradient separator ────────────────────────────
+  _sep() {
+    printf '\033[K  %s%s%s%s%s\n' \
+      "${T_BLUE}$(printf '%0.s─' {1..14})${RESET}" \
+      "${T_PINK}$(printf '%0.s─' {1..14})${RESET}" \
+      "${T_WHITE}$(printf '%0.s─' {1..14})${RESET}" \
+      "${T_PINK}$(printf '%0.s─' {1..14})${RESET}" \
+      "${T_BLUE}$(printf '%0.s─' {1..14})${RESET}"
+  }
+
+  # line printer: erase to EOL then print indented colored content
+  _wl() {
+    printf '\033[K  %b\n' "$*"
+  }
+
+  _fmt_bytes() {
+    local bytes="${1:-0}"
+    [[ -z "${bytes}" || "${bytes}" == "0" ]] && printf '—' && return
+    if (( bytes < 1024 )); then
+      printf '%dB' "${bytes}"
+    elif (( bytes < 1048576 )); then
+      printf '%dKB' "$(( bytes / 1024 ))"
+    elif (( bytes < 1073741824 )); then
+      printf '%dMB' "$(( bytes / 1048576 ))"
+    else
+      printf '%dGB' "$(( bytes / 1073741824 ))"
+    fi
+  }
+
+  _fmt_uptime() {
+    local secs=$1
+    if (( secs < 60 )); then
+      printf '%ds' "${secs}"
+    elif (( secs < 3600 )); then
+      printf '%dm %ds' "$(( secs/60 ))" "$(( secs%60 ))"
+    else
+      printf '%dh %02dm %02ds' "$(( secs/3600 ))" "$(( (secs%3600)/60 ))" "$(( secs%60 ))"
+    fi
+  }
+
+  _mode_color() {
+    case "$1" in
+      CALM)      printf '%s' "${T_BLUE}" ;;
+      ALERT)     printf '%s' "${T_ROSE}" ;;
+      REPAIR)    printf '%s' "${T_PINK}" ;;
+      PARTITION) printf '%s' "${T_PINK}" ;;
+      *)         printf '%s' "${T_WHITE}" ;;
+    esac
+  }
+
+  # ── terminal setup ──────────────────────────────────────
+  # capture stty state before any changes so trap can always restore it
+  local old_stty
+  old_stty=$(stty -g 2>/dev/null || true)
+
+  # enter alternate screen buffer like Star Wars/vim/htop
+  printf '\033[?1049h'
+  printf '\033[2J\033[H'  # full clear once on entry
+  printf '\033[?25l'      # hide cursor
+
+  _watch_cleanup() {
+    [[ -n "${old_stty}" ]] && stty "${old_stty}" 2>/dev/null || true
+    printf '\033[?1049l'  # leave alternate screen, original returns
+    printf '\033[?25h'    # show cursor
+    printf '\033[0m'      # reset colors
+    exit 0
+  }
+  trap _watch_cleanup EXIT INT TERM
+
+  # raw mode: no echo, no line buffering — single-key input without Enter
+  stty -echo -icanon min 0 time 0
+
+  # ── data cache — initialized before loop, refreshed every 2s ──────────
+  local data_cycle=0
+  local sync_mode="CALM" fever="false" last_cycle=""
+  local mcolor; mcolor=$(_mode_color "CALM")
+  local sync_interval_hint="30s"
+  local last_sync_str="unknown"
+  local listener_pid="" listener_str="${T_DIM}checking...${RESET}"
+  local sync_pid="" sync_str="${T_DIM}checking...${RESET}"
+  local iface_str="${T_LILAC}✗ down${RESET}" iface_up=false
+  local key_count=0 key_expected=$(( ${#PEER_NAMES[@]} + 1 )) key_str="—"
+  local czar_key_str="${T_DIM}checking...${RESET}"
+  local wg_dump=""
+  local total_rx=0 total_tx=0
+  local total_rx_str="—" total_tx_str="—"
+  local fever_str="${T_BLUE}no fever${RESET}"
+  local new_logs=""
+
+  # ── main refresh loop ───────────────────────────────────
+  while true; do
+    # ── always: cheap per-cycle updates ──────────────────
+    local spin="${SPINNER_COLORS[$spinner_idx]}${SPINNER_FRAMES[$spinner_idx]}${RESET}"
+    spinner_idx=$(( (spinner_idx + 1) % 4 ))
+
+    local now_str; now_str=$(date '+%H:%M:%S')
+    local now_ts; now_ts=$(date +%s)
+    local elapsed=$(( SECONDS - watch_start_ts ))
+    local uptime_str; uptime_str=$(_fmt_uptime "${elapsed}")
+
+    local role="peer"
+    [[ "${MY_IS_CZAR:-false}" == "true" ]] && role="czar"
+
+    # ── data refresh — every 4 cycles (2s) ───────────────
+    data_cycle=$(( (data_cycle + 1) % 4 ))
+    if (( data_cycle == 0 )); then
+      # sync state
+      sync_mode="CALM"; fever="false"; last_cycle=""
+      if [[ -f "${sync_state_file}" ]]; then
+        sync_mode=$(grep "^MODE=" "${sync_state_file}" 2>/dev/null | cut -d= -f2)
+        fever=$(grep "^FEVER=" "${sync_state_file}" 2>/dev/null | cut -d= -f2)
+        last_cycle=$(grep "^LAST_CYCLE=" "${sync_state_file}" 2>/dev/null | cut -d= -f2)
+        [[ -z "${sync_mode}" ]] && sync_mode="CALM"
+        [[ -z "${fever}" ]] && fever="false"
+      fi
+      mcolor=$(_mode_color "${sync_mode}")
+
+      # sync interval hint
+      sync_interval_hint="30s"
+      case "${sync_mode}" in
+        ALERT)            sync_interval_hint="15s" ;;
+        REPAIR|PARTITION) sync_interval_hint="5s" ;;
+      esac
+
+      # last sync age
+      last_sync_str="unknown"
+      if [[ -n "${last_cycle}" && "${last_cycle}" =~ ^[0-9]+$ ]]; then
+        local sync_age=$(( now_ts - last_cycle ))
+        last_sync_str="${sync_age}s ago"
+      elif kill -0 "$(cat "${sync_pid_file}" 2>/dev/null)" 2>/dev/null; then
+        last_sync_str="loop active"
+      fi
+
+      # listener status
+      listener_str="${T_LILAC}✗ stopped${RESET}"
+      if [[ -f "${listener_pid_file}" ]]; then
+        read -r listener_pid < "${listener_pid_file}" 2>/dev/null
+        if kill -0 "${listener_pid}" 2>/dev/null; then
+          listener_str="${T_BLUE}✓ running${RESET} ${T_DIM}pid ${listener_pid}${RESET}"
+        fi
+      fi
+
+      # sync loop status
+      sync_str="${T_LILAC}✗ stopped${RESET}"
+      if [[ -f "${sync_pid_file}" ]]; then
+        read -r sync_pid < "${sync_pid_file}" 2>/dev/null
+        if kill -0 "${sync_pid}" 2>/dev/null; then
+          sync_str="${T_BLUE}✓ running${RESET} ${T_DIM}pid ${sync_pid}${RESET}"
+        fi
+      fi
+
+      # interface state
+      iface_str="${T_LILAC}✗ down${RESET}"; iface_up=false
+      if ip link show "${iface}" &>/dev/null 2>&1; then
+        iface_up=true
+        iface_str="${T_BLUE}✓ up${RESET} ${T_WHITE}${MY_TUNNEL_IP:-?}/24${RESET}"
+      fi
+
+      # node signing key count
+      key_count=$(find "${KEY_DIR}" -name "*-node.pub" 2>/dev/null | wc -l | tr -d ' ')
+      key_expected=$(( ${#PEER_NAMES[@]} + 1 ))
+      key_str="${key_count}/${key_expected} stored"
+
+      # czar pubkey status
+      czar_key_str="${T_LILAC}✗ missing${RESET}"
+      [[ -f "${KEY_DIR}/czar-control.pub" ]] && czar_key_str="${T_BLUE}✓ verified${RESET}"
+
+      # wg dump — parse once
+      wg_dump=""
+      ${iface_up} && wg_dump=$(wg show "${iface}" dump 2>/dev/null)
+
+      # total rx/tx
+      total_rx=0; total_tx=0
+      if [[ -n "${wg_dump}" ]]; then
+        while IFS=$'\t' read -r f1 f2 f3 f4 f5 f6 f7 f8; do
+          [[ "${f1}" =~ ^[a-zA-Z0-9+/=]{43,44}$ ]] || continue
+          [[ "${f6}" =~ ^[0-9]+$ ]] && total_rx=$(( total_rx + f6 ))
+          [[ "${f7}" =~ ^[0-9]+$ ]] && total_tx=$(( total_tx + f7 ))
+        done <<< "${wg_dump}"
+      fi
+      total_rx_str=$(_fmt_bytes "${total_rx}")
+      total_tx_str=$(_fmt_bytes "${total_tx}")
+
+      # fever status
+      fever_str="${T_BLUE}no fever${RESET}"
+      [[ "${fever}" == "true" ]] && fever_str="${T_PINK}${T_BOLD}⚠ FEVER ACTIVE${RESET}"
+
+      # new log events
+      new_logs=""
+      if [[ -f "${listener_log}" ]]; then
+        new_logs=$(grep -v "PING\|PONG\|Ncat:\|Address already" \
+          "${listener_log}" 2>/dev/null | \
+          grep "\[INFO\]\|\[WARN\]\|\[DEBUG\]\|SECURITY" | \
+          tail -10 | \
+          sed 's/\[.*T\([0-9:]*\)\]/[\1]/')
+      fi
+    fi
+
+    # czar reachability — only every 5th cycle
+    ping_cycle=$(( (ping_cycle + 1) % 5 ))
+    if (( ping_cycle == 0 )); then
+      if ping -c1 -W1 "${CZAR_TUNNEL_IP:-${CZAR_IP:-127.0.0.1}}" &>/dev/null 2>&1; then
+        czar_reachable=true
+      else
+        czar_reachable=false
+      fi
+    fi
+    local czar_str
+    if ${czar_reachable}; then
+      czar_str="${T_BLUE}✓ reachable${RESET}"
+    else
+      czar_str="${T_PINK}✗ unreachable${RESET}"
+    fi
+
+    local healthy_count=0
+
+    # ── MESH VIEW RENDERING ──────────────────────────────
+    # pipe subshell output through cat — C-level buffering, one write per cycle
+    (
+        printf '\033[H'
+
+        printf '\033[K  %s%s ✦ ldown v%s — MESH WATCH  %s%s%s\n' \
+          "${T_PINK}${T_BOLD}" "${RESET}" "${LDOWN_VERSION:-0.1.0}" \
+          "${T_DIM}" "${now_str}" "${RESET}"
+
+        _sep
+
+        printf '\033[K  %s%snode:%s %s%s%s%s  %s•%s  role: %s%s%s  %s•%s  tunnel: %s%s%s  %s•%s  uptime: %s%s%s\n' \
+          "${T_WHITE}" "" "${RESET}" "${T_PINK}${T_BOLD}" "${RESET}" "${MY_NAME:-?}" "${RESET}" \
+          "${T_DIM}" "${RESET}" "${T_SKY}" "${role}" "${RESET}" "${T_DIM}" "${RESET}" \
+          "${T_WHITE}" "${MY_TUNNEL_IP:-?}" "${RESET}" "${T_DIM}" "${RESET}" \
+          "${T_LILAC}" "${uptime_str}" "${RESET}"
+
+        printf '\033[K  %s%sczar:%s %s%s%s %s(%s)%s  %s•%s  %s  %s•%s  mode: %s%s%s\n' \
+          "${T_WHITE}" "" "${RESET}" "${T_PINK}" "${CZAR_IP:-?}" "${RESET}" \
+          "${T_DIM}" "${CZAR_TUNNEL_IP:-?}" "${RESET}" "${T_DIM}" "${RESET}" \
+          "${czar_str}" "${T_DIM}" "${RESET}" "${mcolor}" "${sync_mode}" "${RESET}"
+
+        _sep
+
+        printf '\033[K  %s%s✦ PEERS%s\n' "${T_BOLD}${T_PINK}" "" "${RESET}"
+
+        printf '\033[K  %s%-8s %-12s %-22s %-9s%-6s %-11s%s\n' "${T_DIM}" \
+          'NAME' 'TUNNEL IP' 'ENDPOINT' 'STATUS' 'AGE' 'IN / OUT' "${RESET}"
+
+        # peer rows
+        local row_alt=0
+        for i in "${!PEER_NAMES[@]}"; do
+          local pname="${PEER_NAMES[$i]}"
+          local ptunnel="${PEER_TUNNEL_IPS[$i]}"
+          local pip="${PEER_IPS[$i]}"
+          local pport="${PEER_PORTS[$i]:-${WG_PORT:-51820}}"
+
+          local peer_line_data=""
+          if [[ -n "${wg_dump}" ]]; then
+            peer_line_data=$(awk -F'\t' -v ip="${ptunnel}" '$4 ~ ip {print; exit}' <<< "${wg_dump}")
+          fi
+
+          local peer_ep="" peer_hs=0 peer_rx=0 peer_tx=0
+          if [[ -n "${peer_line_data}" ]]; then
+            peer_ep=$(cut -f3 <<< "${peer_line_data}")
+            peer_hs=$(cut -f5 <<< "${peer_line_data}")
+            peer_rx=$(cut -f6 <<< "${peer_line_data}")
+            peer_tx=$(cut -f7 <<< "${peer_line_data}")
+            [[ "${peer_ep}" == "(none)" ]] && peer_ep=""
+            [[ ! "${peer_hs}" =~ ^[0-9]+$ ]] && peer_hs=0
+            [[ ! "${peer_rx}" =~ ^[0-9]+$ ]] && peer_rx=0
+            [[ ! "${peer_tx}" =~ ^[0-9]+$ ]] && peer_tx=0
+          fi
+
+          local ep_display="${peer_ep:-${pip}:${pport}}"
+
+          local status_display row_color hs_str
+          if [[ ! -f "${PEER_DIR}/peer-${ptunnel}.conf" ]]; then
+            status_display="${T_DIM}⊘ left   ${RESET}"
+            row_color="${T_DIM}"
+            hs_str="—"
+            peer_rx=0
+            peer_tx=0
+          elif ! ${iface_up} || [[ -z "${peer_line_data}" ]]; then
+            status_display="${T_LILAC}✗ down   ${RESET}"
+            row_color="${T_LILAC}"
+            hs_str="—"
+            peer_rx=0
+            peer_tx=0
+          elif [[ "${peer_hs}" == "0" ]]; then
+            status_display="${T_WHITE}${spin} wait  ${RESET}"
+            row_color="${T_WHITE}"
+            hs_str="—"
+          else
+            local hs_age_int=$(( now_ts - peer_hs ))
+            hs_str="${hs_age_int}s"
+            if (( hs_age_int < 150 )); then
+              status_display="${T_BLUE}✓ up     ${RESET}"
+              row_color="${T_BLUE}"
+              healthy_count=$(( healthy_count + 1 ))
+            elif (( hs_age_int < 190 )); then
+              status_display="${T_SKY}~ stale  ${RESET}"
+              row_color="${T_SKY}"
+            else
+              status_display="${T_LILAC}✗ down   ${RESET}"
+              row_color="${T_LILAC}"
+            fi
+          fi
+
+          local prx_str; prx_str=$(_fmt_bytes "${peer_rx}")
+          local ptx_str; ptx_str=$(_fmt_bytes "${peer_tx}")
+          local rx_tx_str="${prx_str} / ${ptx_str}"
+
+          local row_tint=""
+          (( row_alt % 2 == 1 )) && row_tint="${T_DIM}"
+          row_alt=$(( row_alt + 1 ))
+
+          printf '\033[K  %b%-8s %-12s %-22s %s%-6s %-11s%b\n' \
+            "${row_tint}${row_color}" \
+            "${pname}" "${ptunnel}" "${ep_display}" \
+            "${status_display}" \
+            "${hs_str}" \
+            "${rx_tx_str}" \
+            "${RESET}"
+        done
+
+        _sep
+
+        printf '\033[K  %s%s✦ SYSTEM%s\n' "${T_BOLD}${T_PINK}" "" "${RESET}"
+
+        # build plain text values for width-correct column alignment
+        local listener_plain="✗ stopped"
+        if [[ -n "${listener_pid}" ]] && kill -0 "${listener_pid}" 2>/dev/null; then
+          listener_plain="✓ running   pid ${listener_pid}"
+        fi
+        local iface_plain="✗ down"
+        ${iface_up} && iface_plain="✓ up  ${MY_TUNNEL_IP:-?}/24"
+        local sync_plain="✗ stopped"
+        if [[ -n "${sync_pid}" ]] && kill -0 "${sync_pid}" 2>/dev/null; then
+          sync_plain="✓ running   pid ${sync_pid}"
+        fi
+        local czar_key_plain="✗ missing"
+        [[ -f "${KEY_DIR}/czar-control.pub" ]] && czar_key_plain="✓ verified"
+
+        # line 1: listener / interface
+        printf '\033[K  '
+        printf '%b%-10s%b' "${T_BLUE}" "listener" "${RESET}"
+        printf '%-28s' "${listener_plain}"
+        printf '%b%-10s%b' "${T_BLUE}" "interface" "${RESET}"
+        printf '%s\n' "${iface_plain}"
+
+        # line 2: sync / czar key
+        printf '\033[K  '
+        printf '%b%-10s%b' "${T_BLUE}" "sync" "${RESET}"
+        printf '%-28s' "${sync_plain}"
+        printf '%b%-10s%b' "${T_BLUE}" "czar key" "${RESET}"
+        printf '%s\n' "${czar_key_plain}"
+
+        # line 3: keys / interval
+        printf '\033[K  '
+        printf '%b%-10s%b' "${T_BLUE}" "keys" "${RESET}"
+        printf '%-28s' "${key_str}"
+        printf '%b%-10s%b' "${T_BLUE}" "interval" "${RESET}"
+        printf '%s\n' "${sync_interval_hint}"
+
+        # line 4: traffic (full width)
+        printf '\033[K  '
+        printf '%b%-10s%b' "${T_BLUE}" "traffic" "${RESET}"
+        printf '%b↓ %s rx%b   %b↑ %s tx%b\n' \
+          "${T_BLUE}" "${total_rx_str}" "${RESET}" \
+          "${T_PINK}" "${total_tx_str}" "${RESET}"
+
+        # line 5: bootstrap status (if active or recently completed)
+        local bootstrap_meta="/run/ldown/bootstrap_meta"
+        local bootstrap_tracker="/run/ldown/bootstrap_joined"
+        local bpidfile="/run/ldown/bootstrap.pid"
+        local b_status_str="${T_DIM}· offline${RESET}"
+        if [[ -f "${bootstrap_meta}" ]]; then
+          local b_start="" b_timeout="" b_total="" b_closed=""
+          while IFS='=' read -r bk bv; do
+            case "${bk}" in
+              start) b_start="${bv}" ;;
+              timeout) b_timeout="${bv}" ;;
+              total) b_total="${bv}" ;;
+              closed) b_closed="true" ;;
+            esac
+          done < "${bootstrap_meta}"
+          local b_joined=0
+          [[ -f "${bootstrap_tracker}" ]] && b_joined=$(sort -u "${bootstrap_tracker}" 2>/dev/null | wc -l)
+          if [[ "${b_closed}" == "true" ]]; then
+            if [[ "${b_joined}" -ge "${b_total}" ]]; then
+              b_status_str="${T_BLUE}✓ complete${RESET} ${T_DIM}${b_joined}/${b_total} joined${RESET}"
+            else
+              b_status_str="${T_SKY}· timed out${RESET} ${T_DIM}${b_joined}/${b_total} joined${RESET}"
+            fi
+          else
+            local b_pid=""
+            [[ -f "${bpidfile}" ]] && { read -r b_pid < "${bpidfile}"; } 2>/dev/null
+            if [[ -n "${b_pid}" ]] && kill -0 "${b_pid}" 2>/dev/null; then
+              local b_elapsed=$(( now_ts - b_start ))
+              local b_remaining=$(( b_timeout - b_elapsed ))
+              [[ "${b_remaining}" -lt 0 ]] && b_remaining=0
+              b_status_str="${T_PINK}✦ serving${RESET}  ${T_DIM}${b_joined}/${b_total} joined   ${b_remaining}s remaining${RESET}"
+            else
+              b_status_str="${T_DIM}· offline${RESET}"
+            fi
+          fi
+        fi
+        printf '\033[K  '
+        printf '%b%-10s%b' "${T_BLUE}" "bootstrap" "${RESET}"
+        printf '%s\n' "${b_status_str}"
+
+        _sep
+
+        local heal_str=""
+        (( healthy_count < ${#PEER_NAMES[@]} )) && heal_str=" ${T_DIM}— sync healing${RESET}"
+
+        printf '\033[K  %s●%s %s%s%s  %s•%s  %s  %s•%s  %s%d/%d healthy%s%s  %s•%s  last sync: %s%s%s\n' \
+          "${mcolor}" "${RESET}" "${mcolor}" "${sync_mode}" "${RESET}" \
+          "${T_DIM}" "${RESET}" "${fever_str}" "${T_DIM}" "${RESET}" \
+          "${T_WHITE}" "${healthy_count}" "${#PEER_NAMES[@]}" "${RESET}" "${heal_str}" \
+          "${T_DIM}" "${RESET}" "${T_DIM}" "${last_sync_str}" "${RESET}"
+
+        _sep
+
+        printf '\033[K  %s[q]%s %squit%s  %s[l]%s %slive logs%s  %sCtrl+C%s\n' \
+          "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+          "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+          "${T_DIM}" "${RESET}"
+
+        _sep
+
+        printf '\033[J'
+    ) | cat
+
+    # keyboard input — non-blocking, 0.5 second timeout
+    local key=""
+    if read -r -s -n1 -t 0.5 key 2>/dev/null; then
+      case "${key}" in
+        q|Q)
+          break
+          ;;
+        l|L)
+          # exit to log view, re-enter dashboard when it returns
+          printf '\033[?1049l\033[?25h\033[0m\n'
+          [[ -n "${old_stty}" ]] && stty "${old_stty}" 2>/dev/null || true
+          cmd_mesh_watch_logs
+          # re-enter dashboard
+          stty -echo -icanon min 0 time 0
+          printf '\033[?1049h\033[2J\033[H\033[?25l'
+          ;;
+        r|R)
+          if [[ "${MY_IS_CZAR:-false}" != "true" ]]; then
+            printf '\033[?25h\033[0m\n'
+            cmd_mesh_recover &
+            printf '\033[?25l'
+          fi
+          ;;
+        p|P)
+          if [[ "${MY_IS_CZAR:-false}" == "true" ]]; then
+            printf '\033[?25h\033[0m\n'
+            printf 'promote czar — enter new czar name: '
+            read -r new_czar
+            [[ -n "${new_czar}" ]] && printf 'ldown czar promote %s\n' "${new_czar}"
+            printf '\033[?25l'
+          fi
+          ;;
+      esac
+    fi
+  done
+
+  printf '\033[?25h'
+  printf '\033[0m\n'
+}
+
+# =============================================================================
+# cmd_mesh_watch_logs
+# =============================================================================
+# simple scrollable log view with tail -f
+# runs in normal terminal, not alternate buffer
+# Ctrl+C returns to normal terminal (not back to dashboard)
+# =============================================================================
+
+cmd_mesh_watch_logs() {
+  local listener_log="${LOG_LISTENER:-${LOG_DIR:-/var/log/ldown}/listener.log}"
+  local T_BLUE=$'\033[38;5;117m'
+  local T_PINK=$'\033[38;5;218m'
+  local T_WHITE=$'\033[0;97m'
+  local T_SKY=$'\033[38;5;153m'
+  local T_LILAC=$'\033[38;5;183m'
+  local T_DIM=$'\033[2m'
+  local T_BOLD=$'\033[1m'
+  local RESET=$'\033[0m'
+  local seg=14
+
+  if [[ -f "${ROSTER_CONF:-/etc/ldown/roster.conf}" ]]; then
+    roster_load "${ROSTER_CONF:-/etc/ldown/roster.conf}" 2>/dev/null || true
+  fi
+  if [[ -f "${MESH_CONF:-/etc/ldown/mesh.conf}" ]]; then
+    source_if_exists "${MESH_CONF:-/etc/ldown/mesh.conf}"
+  fi
+
+  local old_stty_logs
+  old_stty_logs=$(stty -g 2>/dev/null || true)
+  stty -echo -icanon min 0 time 0 2>/dev/null || true
+
+  printf '\033[?1049h\033[2J\033[H\033[?25l'
+
+  local tail_pid=""
+  local tmplog="/tmp/ldown-livetail.$$"
+  local filtlog="/tmp/ldown-filtlog.$$"
+
+  _log_cleanup() {
+    [[ -n "${tail_pid}" ]] && kill "${tail_pid}" 2>/dev/null || true
+    wait "${tail_pid}" 2>/dev/null || true
+    rm -f "${tmplog}" "${filtlog}"
+    printf '\033[r'
+    printf '\033[?25h\033[?1049l'
+    stty "${old_stty_logs}" 2>/dev/null || true
+  }
+  trap '_log_cleanup; return 0' INT
+
+  # build IP→name lookup
+  local -A ip_to_name=()
+  local i
+  for i in "${!PEER_NAMES[@]}"; do
+    [[ -n "${PEER_IPS[$i]:-}" ]] && ip_to_name["${PEER_IPS[$i]}"]="${PEER_NAMES[$i]}"
+    [[ -n "${PEER_TUNNELS[$i]:-}" ]] && ip_to_name["${PEER_TUNNELS[$i]}"]="${PEER_NAMES[$i]}"
+  done
+
+  _log_resolve_line() {
+    local line="$1"
+    local ip name
+    for ip in "${!ip_to_name[@]}"; do
+      name="${ip_to_name[$ip]}"
+      line="${line//$ip/${T_PINK}${name}${RESET}}"
+    done
+    if [[ "${line}" =~ ^\[([0-9]{4}-[0-9]{2}-[0-9]{2})T([0-9]{2}:[0-9]{2}:[0-9]{2})\] ]]; then
+      line="[${BASH_REMATCH[2]}]${line#*]}"
+    fi
+    printf '%s' "${line}"
+  }
+
+  _log_color_line() {
+    local raw="$1"
+    local line
+    line="$(_log_resolve_line "${raw}")"
+    local color="${T_WHITE}"
+    [[ "${raw}" == *"SECURITY"* ]] && color="${T_LILAC}"
+    [[ "${raw}" == *"[WARN]"* ]]   && color="${T_SKY}"
+    [[ "${raw}" == *"[DEBUG]"* ]]  && color="${T_DIM}"
+    [[ "${raw}" == *"[INFO]"* ]]   && color="${T_BLUE}"
+    [[ "${raw}" == *"[HEAL]"* ]]   && color="${T_SKY}"
+    [[ "${raw}" == *"[FEVER]"* ]]  && color="${T_PINK}${T_BOLD}"
+    printf '\033[K%s  %s%s\n' "${color}" "${line}" "${RESET}"
+  }
+
+  _log_sep() {
+    printf '\033[K  '
+    printf '\033[38;5;153m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
+    printf '\033[38;5;218m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
+    printf '\033[0;97m%s'     "$(printf '─%.0s' $(seq 1 ${seg}))"
+    printf '\033[38;5;218m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
+    printf '\033[38;5;153m%s' "$(printf '─%.0s' $(seq 1 ${seg}))"
+    printf '\033[0m\n'
+  }
+
+  local role_str="peer"
+  [[ "${MY_IS_CZAR:-false}" == "true" ]] && role_str="czar"
+
+  local term_rows
+  term_rows=$(stty size 2>/dev/null | awk '{print $1}' || echo 24)
+  local header_lines=5
+  local footer_lines=3
+  local content_lines=15
+
+  local log_filter="PING\|PONG\|local: can only be used\|No such file or directory\|Ncat: bind to"
+  local mode="live"
+  local hist_offset=0
+  local hist_total=0
+  local hist_pages=0
+  local hist_page=0
+
+  # ── LIVE MODE ──────────────────────────────────────────────────
+
+  _log_live_header() {
+    printf '\033[H'
+    printf '\033[K\033[38;5;218m  ✦ ldown — LIVE LOGS\033[0m\n'
+    _log_sep
+    printf '\033[K  %snode:%s %s  •  %srole:%s %s  •  %stunnel:%s %s\n' \
+      "${T_DIM}" "${RESET}" "${MY_NAME:-?}" \
+      "${T_DIM}" "${RESET}" "${role_str}" \
+      "${T_DIM}" "${RESET}" "${MY_TUNNEL_IP:-?}"
+    printf '\033[K  %s[q]%s %sback%s  %s[l]%s %sdashboard%s  %s[H]%s %sHISTORY%s      %sPAGE: %sLIVE%s\n' \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+      "${T_DIM}" "${T_BLUE}" "${RESET}"
+    _log_sep
+  }
+
+  _log_enter_live() {
+    mode="live"
+    printf '\033[2J'
+    _log_live_header
+    # set scroll region: header is lines 1-5, scrollable area is 6 to term_rows
+    printf '\033[%d;%dr' "$((header_lines + 1))" "${term_rows}"
+    printf '\033[%d;1H' "$((header_lines + 1))"
+    # show last 10 from history
+    grep -v "${log_filter}" "${listener_log}" 2>/dev/null | \
+      tail -10 | while IFS= read -r line; do
+        _log_color_line "${line}"
+      done
+    # reset tail tracking
+    : > "${tmplog}"
+    last_tail_size=0
+  }
+
+  # ── HISTORY MODE ───────────────────────────────────────────────
+
+  _log_hist_reload() {
+    grep -v "${log_filter}" "${listener_log}" > "${filtlog}" 2>/dev/null || : > "${filtlog}"
+    hist_total=$(wc -l < "${filtlog}" 2>/dev/null || echo 0)
+    hist_pages=$(( (hist_total + content_lines - 1) / content_lines ))
+    [[ "${hist_pages}" -lt 1 ]] && hist_pages=1
+    # start at last page
+    hist_page="${hist_pages}"
+    hist_offset=$(( (hist_page - 1) * content_lines ))
+  }
+
+  _log_hist_draw() {
+    printf '\033[r'
+    printf '\033[2J\033[H'
+    # header — 2 lines
+    printf '\033[K\033[38;5;218m  ✦ ldown — LOG HISTORY\033[0m\n'
+    _log_sep
+    # footer first — pinned right after header
+    printf '\033[K  %s[q]%s %sback%s  %s[l]%s %sdashboard%s  %s[H]%s %sLIVE%s           %sPAGE: %s%d/%d%s\n' \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+      "${T_SKY}" "${RESET}" "${T_BLUE}" "${RESET}" \
+      "${T_DIM}" "${T_WHITE}" "${hist_page}" "${hist_pages}" "${RESET}"
+    printf '\033[K  %s[←]%s %sPage%s %s[→]%s %sPage%s  %s[↑]%s %sUp%s %s[↓]%s %sDown%s\n' \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}" \
+      "${T_SKY}" "${RESET}" "${T_DIM}" "${RESET}"
+    _log_sep
+    # content area — starts at line 7
+    local start_line=$((hist_offset + 1))
+    local end_line=$((hist_offset + content_lines))
+    [[ "${end_line}" -gt "${hist_total}" ]] && end_line="${hist_total}"
+    if [[ "${hist_total}" -gt 0 && "${start_line}" -le "${hist_total}" ]]; then
+      sed -n "${start_line},${end_line}p" "${filtlog}" | while IFS= read -r line; do
+        _log_color_line "${line}"
+      done
+    fi
+  }
+
+  # ── MAIN LOOP ──────────────────────────────────────────────────
+
+  # start tail -f background
+  : > "${tmplog}"
+  tail -f "${listener_log}" 2>/dev/null | \
+    grep --line-buffered -v "${log_filter}" >> "${tmplog}" &
+  tail_pid=$!
+  local last_tail_size=0
+
+  _log_enter_live
+
+  while true; do
+    local k=""
+    read -r -s -n1 -t1 k 2>/dev/null || true
+
+    if [[ "${k}" == "q" || "${k}" == "Q" ]]; then
+      break
+    elif [[ "${k}" == "l" || "${k}" == "L" ]]; then
+      break
+    elif [[ "${k}" == "h" || "${k}" == "H" ]]; then
+      if [[ "${mode}" == "live" ]]; then
+        _log_hist_reload
+        _log_hist_draw
+        mode="history"
+      else
+        _log_enter_live
+      fi
+      continue
+    elif [[ "${k}" == $'\033' ]]; then
+      local seq1="" seq2=""
+      read -r -s -n1 -t0.2 seq1 2>/dev/null || true
+      read -r -s -n1 -t0.2 seq2 2>/dev/null || true
+      if [[ "${seq1}" == "[" && "${mode}" == "history" ]]; then
+        case "${seq2}" in
+          D) # left arrow — previous page
+            if [[ "${hist_page}" -gt 1 ]]; then
+              hist_page=$((hist_page - 1))
+              hist_offset=$(( (hist_page - 1) * content_lines ))
+              _log_hist_draw
+            fi
+            ;;
+          C) # right arrow — next page
+            if [[ "${hist_page}" -lt "${hist_pages}" ]]; then
+              hist_page=$((hist_page + 1))
+              hist_offset=$(( (hist_page - 1) * content_lines ))
+              _log_hist_draw
+            fi
+            ;;
+          A) # up arrow — scroll up one line
+            if [[ "${hist_offset}" -gt 0 ]]; then
+              hist_offset=$((hist_offset - 1))
+              hist_page=$(( hist_offset / content_lines + 1 ))
+              _log_hist_draw
+            fi
+            ;;
+          B) # down arrow — scroll down one line
+            if [[ $((hist_offset + content_lines)) -lt "${hist_total}" ]]; then
+              hist_offset=$((hist_offset + 1))
+              hist_page=$(( hist_offset / content_lines + 1 ))
+              _log_hist_draw
+            fi
+            ;;
+        esac
+      fi
+      continue
+    fi
+
+    # live mode: stream new lines
+    if [[ "${mode}" == "live" ]]; then
+      local cur_tail_size
+      cur_tail_size=$(wc -l < "${tmplog}" 2>/dev/null || echo 0)
+      if [[ "${cur_tail_size}" -gt "${last_tail_size}" ]]; then
+        sed -n "$((last_tail_size + 1)),${cur_tail_size}p" "${tmplog}" | \
+          while IFS= read -r line; do
+            _log_color_line "${line}"
+          done
+        last_tail_size="${cur_tail_size}"
+      fi
+    fi
+  done
+
+  _log_cleanup
+}
+
+# =============================================================================
 # cmd_mesh_status
 # =============================================================================
 # show the state of every peer in the mesh
@@ -1188,6 +2326,10 @@ cmd_mesh_reset() {
 # =============================================================================
 
 cmd_mesh_status() {
+  if [[ "${1:-}" == "--watch" ]]; then
+    cmd_mesh_watch
+    return 0
+  fi
   banner
   require_root
   check_dependency wg awk
@@ -1501,7 +2643,7 @@ cmd_mesh_doctor() {
       warnings=$((warnings + 1))
     fi
 
-    if echo PING | ncat --wait 2 --send-only "${CZAR_IP}" "${LDOWN_PORT}" &>/dev/null; then
+    if echo PING | ncat --ssl --wait 2 --send-only "${CZAR_IP}" "${LDOWN_PORT}" &>/dev/null; then
       status_ok "czar port" "${LDOWN_PORT} open"
     else
       status_warn "czar port" "${LDOWN_PORT} not reachable — listener may be down"
@@ -1767,4 +2909,87 @@ cmd_mesh_neighbors() {
   printf '\n'
   info "relay rules: direct preferred — relay fallback — relay→relay forbidden"
   printf '\n'
+}
+
+# =============================================================================
+# cmd_ticket_create
+# =============================================================================
+# czar generates a one-time admission ticket for a specific node
+# usage: ldown mesh ticket create <name>
+# =============================================================================
+cmd_ticket_create() {
+  require_root
+  source_if_exists "${MESH_CONF}"
+  [[ "${MY_IS_CZAR:-false}" == "true" ]] || fatal "only czar can create tickets"
+  local name="${1:-}"
+  [[ -n "${name}" ]] || fatal "usage: ldown mesh ticket create <name>"
+
+  local ticket_dir="/etc/ldown/tickets"
+  mkdir -p "${ticket_dir}" 2>/dev/null || true
+  chmod 700 "${ticket_dir}"
+
+  if [[ -f "${ticket_dir}/${name}" ]]; then
+    warn "ticket already exists for ${name}"
+    confirm "overwrite?" || { info "cancelled"; exit 0; }
+  fi
+
+  local token
+  token="$(head -c32 /dev/urandom | base64 -w0)"
+  printf '%s\n' "${token}" > "${ticket_dir}/${name}"
+  chmod 600 "${ticket_dir}/${name}"
+  printf '\n'
+  success "ticket created for ${name}"
+  printf '\n'
+  info "token: ${token}"
+  info "share this token securely with the node operator"
+  info "it can only be used once — destroyed after JOIN"
+  printf '\n'
+}
+
+# =============================================================================
+# cmd_ticket_list
+# =============================================================================
+cmd_ticket_list() {
+  require_root
+  source_if_exists "${MESH_CONF}"
+  [[ "${MY_IS_CZAR:-false}" == "true" ]] || fatal "only czar can list tickets"
+
+  local ticket_dir="/etc/ldown/tickets"
+  if [[ ! -d "${ticket_dir}" ]] || [[ -z "$(ls -A "${ticket_dir}" 2>/dev/null)" ]]; then
+    info "no tickets"
+    return 0
+  fi
+
+  printf '\n'
+  printf '  %-20s %s\n' "NODE" "CREATED"
+  printf '  %-20s %s\n' "────" "───────"
+  local f
+  for f in "${ticket_dir}"/*; do
+    [[ -f "${f}" ]] || continue
+    local tname
+    tname="$(basename "${f}")"
+    local tcreated
+    tcreated="$(stat -c '%y' "${f}" 2>/dev/null | cut -d. -f1)"
+    printf '  %-20s %s\n' "${tname}" "${tcreated}"
+  done
+  printf '\n'
+}
+
+# =============================================================================
+# cmd_ticket_revoke
+# =============================================================================
+cmd_ticket_revoke() {
+  require_root
+  source_if_exists "${MESH_CONF}"
+  [[ "${MY_IS_CZAR:-false}" == "true" ]] || fatal "only czar can revoke tickets"
+  local name="${1:-}"
+  [[ -n "${name}" ]] || fatal "usage: ldown mesh ticket revoke <name>"
+
+  local ticket_file="/etc/ldown/tickets/${name}"
+  if [[ -f "${ticket_file}" ]]; then
+    rm -f "${ticket_file}"
+    success "ticket revoked for ${name}"
+  else
+    warn "no ticket found for ${name}"
+  fi
 }
