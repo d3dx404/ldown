@@ -446,9 +446,9 @@ _mesh_bootstrap_serve() {
   [[ "${MY_IS_CZAR:-false}" == "true" ]] || { warn "only czar can serve bootstrap"; return 1; }
 
   local bport="${BOOTSTRAP_PORT:-51822}"
+  local timeout="${OPT_BOOTSTRAP_TIME:-120}"
   local bundle=""
 
-  # find or generate export bundle
   bundle="$(find /home -maxdepth 3 -name 'ldown-export-*.tar.gz.enc' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)"
   if [[ -z "${bundle}" ]]; then
     bundle="$(find /root -maxdepth 3 -name 'ldown-export-*.tar.gz.enc' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)"
@@ -462,7 +462,32 @@ _mesh_bootstrap_serve() {
   bundle_b64="$(base64 -w0 < "${bundle}")"
   local bundle_size=${#bundle_b64}
 
-  # write bootstrap handler
+  local total_peers=0
+  local i
+  for i in "${!PEER_NAMES[@]}"; do
+    [[ "${PEER_NAMES[$i]}" == "${MY_NAME}" ]] && continue
+    total_peers=$((total_peers + 1))
+  done
+
+  local bootstrap_tracker="/run/ldown/bootstrap_joined"
+  local bootstrap_meta="/run/ldown/bootstrap_meta"
+  : > "${bootstrap_tracker}"
+  printf 'start=%s\ntimeout=%s\ntotal=%s\n' "$(date +%s)" "${timeout}" "${total_peers}" > "${bootstrap_meta}"
+
+  local bpidfile="/run/ldown/bootstrap.pid"
+  if [[ -f "${bpidfile}" ]]; then
+    local existing_bpid
+    { read -r existing_bpid < "${bpidfile}"; } 2>/dev/null
+    if [[ -n "${existing_bpid}" ]] && kill -0 "${existing_bpid}" 2>/dev/null; then
+      local joined=0
+      [[ -f "${bootstrap_tracker}" ]] && joined=$(sort -u "${bootstrap_tracker}" | wc -l)
+      info "bootstrap already running (pid ${existing_bpid}) — ${joined}/${total_peers} joined"
+      info "monitor progress: ldown mesh watch"
+      return 0
+    fi
+    rm -f "${bpidfile}"
+  fi
+
   local bhandler
   bhandler="$(mktemp /tmp/ldown-bootstrap.XXXXXX)"
   cat > "${bhandler}" <<BEOF
@@ -471,7 +496,6 @@ read -r -t 10 line || exit 0
 line="\${line%%\$'\r'}"
 [[ -z "\${line}" ]] && exit 0
 
-# parse: BOOTSTRAP|<name>
 IFS='|' read -ra bf <<< "\${line}"
 action="\${bf[0]:-}"
 bname="\${bf[1]:-}"
@@ -481,7 +505,6 @@ if [[ "\${action}" != "BOOTSTRAP" || -z "\${bname}" ]]; then
   exit 1
 fi
 
-# validate name exists in roster
 roster_found=false
 while IFS= read -r rline; do
   [[ "\${rline}" =~ --name[[:space:]]+([^[:space:]]+) ]] && {
@@ -491,10 +514,10 @@ done < "${ROSTER_CONF}"
 
 if [[ "\${roster_found}" != "true" ]]; then
   printf 'ERROR %s not in roster\n' "\${bname}"
+  echo "[WARN] [SECURITY] bootstrap rejected — \${bname} not in roster" >> "${LOG_LISTENER}"
   exit 1
 fi
 
-# auto-create ticket if missing
 ticket_dir="/etc/ldown/tickets"
 ticket_file="\${ticket_dir}/\${bname}"
 mkdir -p "\${ticket_dir}" 2>/dev/null || true
@@ -502,35 +525,64 @@ if [[ ! -f "\${ticket_file}" ]]; then
   token="\$(head -c32 /dev/urandom | base64 -w0)"
   printf '%s\n' "\${token}" > "\${ticket_file}"
   chmod 600 "\${ticket_file}"
+  echo "[INFO] bootstrap: auto-created ticket for \${bname}" >> "${LOG_LISTENER}"
 fi
 ticket=""
 read -r ticket < "\${ticket_file}" 2>/dev/null
 
-# respond
 printf 'BOOTSTRAP_OK\n'
 printf 'TICKET:%s\n' "\${ticket}"
 printf 'BUNDLE_SIZE:%s\n' "${bundle_size}"
 printf 'BUNDLE_B64:%s\n' "${bundle_b64}"
 printf 'END_BOOTSTRAP\n'
+
+printf '%s\n' "\${bname}" >> "${bootstrap_tracker}"
+echo "[INFO] bootstrap: served bundle + ticket to \${bname}" >> "${LOG_LISTENER}"
 BEOF
   chmod 700 "${bhandler}"
 
-  # start bootstrap listener
   (
-    trap "rm -f '${bhandler}'" EXIT
+    trap "rm -f '${bhandler}' '${bpidfile}'; echo 'closed' >> '${bootstrap_meta}'" EXIT
+    local start_ts
+    start_ts=$(date +%s)
+
     while true; do
+      local now_ts elapsed
+      now_ts=$(date +%s)
+      elapsed=$(( now_ts - start_ts ))
+      if (( elapsed >= timeout )); then
+        local joined=0
+        [[ -f "${bootstrap_tracker}" ]] && joined=$(sort -u "${bootstrap_tracker}" | wc -l)
+        echo "[*] bootstrap timeout (${timeout}s) — ${joined}/${total_peers} nodes onboarded" >> "${LOG_LISTENER}"
+        break
+      fi
+
+      if [[ -f "${bootstrap_tracker}" ]]; then
+        local joined
+        joined=$(sort -u "${bootstrap_tracker}" | wc -l)
+        if (( joined >= total_peers )); then
+          echo "[+] all ${total_peers} peers bootstrapped — closing bootstrap listener" >> "${LOG_LISTENER}"
+          break
+        fi
+      fi
+
       ncat -l --keep-open "${MY_IP}" "${bport}" \
         --sh-exec "bash ${bhandler}" \
-        --idle-timeout 30 \
-        2>/dev/null || true
-      sleep 3
+        --idle-timeout 10 -w 10 \
+        2>/dev/null &
+      local ncat_pid=$!
+      sleep 5
+      kill ${ncat_pid} 2>/dev/null || true
+      wait ${ncat_pid} 2>/dev/null || true
     done
   ) &
   local bpid=$!
-  echo "${bpid}" > /run/ldown/bootstrap.pid
+  echo "${bpid}" > "${bpidfile}"
 
   status_ok "bootstrap listener" "pid ${bpid} on ${MY_IP}:${bport}"
-  warn "bootstrap mode is for onboarding only — restart without --bootstrap when done"
+  info "waiting for ${total_peers} peers — auto-closes after all join or ${timeout}s"
+  warn "override timeout: ldown mesh start --bootstrap --time <seconds>"
+  info "monitor progress: ldown mesh watch"
 }
 
 # =============================================================================
@@ -1892,6 +1944,46 @@ cmd_mesh_watch() {
         printf '%b↓ %s rx%b   %b↑ %s tx%b\n' \
           "${T_BLUE}" "${total_rx_str}" "${RESET}" \
           "${T_PINK}" "${total_tx_str}" "${RESET}"
+
+        # line 5: bootstrap status (if active or recently completed)
+        local bootstrap_meta="/run/ldown/bootstrap_meta"
+        local bootstrap_tracker="/run/ldown/bootstrap_joined"
+        local bpidfile="/run/ldown/bootstrap.pid"
+        if [[ -f "${bootstrap_meta}" ]]; then
+          local b_start="" b_timeout="" b_total="" b_closed=""
+          while IFS='=' read -r bk bv; do
+            case "${bk}" in
+              start)   b_start="${bv}" ;;
+              timeout) b_timeout="${bv}" ;;
+              total)   b_total="${bv}" ;;
+              closed)  b_closed="true" ;;
+            esac
+          done < "${bootstrap_meta}"
+          local b_joined=0
+          [[ -f "${bootstrap_tracker}" ]] && b_joined=$(sort -u "${bootstrap_tracker}" 2>/dev/null | wc -l)
+          local b_status_str=""
+          if [[ "${b_closed}" == "true" ]]; then
+            if [[ "${b_joined}" -ge "${b_total}" ]]; then
+              b_status_str="${T_BLUE}✓ complete${RESET} ${T_DIM}${b_joined}/${b_total} joined${RESET}"
+            else
+              b_status_str="${T_SKY}· timed out${RESET} ${T_DIM}${b_joined}/${b_total} joined${RESET}"
+            fi
+          else
+            local b_pid=""
+            [[ -f "${bpidfile}" ]] && { read -r b_pid < "${bpidfile}"; } 2>/dev/null
+            if [[ -n "${b_pid}" ]] && kill -0 "${b_pid}" 2>/dev/null; then
+              local b_elapsed=$(( now_ts - b_start ))
+              local b_remaining=$(( b_timeout - b_elapsed ))
+              [[ "${b_remaining}" -lt 0 ]] && b_remaining=0
+              b_status_str="${T_PINK}✦ serving${RESET}  ${T_DIM}${b_joined}/${b_total} joined   ${b_remaining}s remaining${RESET}"
+            else
+              b_status_str="${T_DIM}· inactive${RESET}"
+            fi
+          fi
+          printf '\033[K  '
+          printf '%b%-10s%b' "${T_BLUE}" "bootstrap" "${RESET}"
+          printf '%s\n' "${b_status_str}"
+        fi
 
         _sep
 

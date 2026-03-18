@@ -419,6 +419,7 @@ main() {
         case "${arg}" in
           --watch) OPT_WATCH=true ;;
           --bootstrap) export OPT_BOOTSTRAP=true ;;
+          --time) export OPT_BOOTSTRAP_TIME="${2:-120}"; shift ;;
           *)       mesh_args+=("${arg}") ;;
         esac
       done
