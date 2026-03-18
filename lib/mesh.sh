@@ -306,7 +306,7 @@ cmd_mesh_init() {
 
   # ── optional mesh passphrase → WireGuard PSK ───────────
   local psk_file="${KEY_DIR}/mesh.psk"
-  if [[ ! -f "${psk_file}" ]]; then
+  if [[ ! -f "${psk_file}" && "${OPT_BOOTSTRAP:-false}" != "true" ]]; then
     step "mesh passphrase (optional)"
     info "a shared passphrase adds post-quantum protection to the WireGuard tunnel"
     info "press Enter to skip, or type a passphrase (all nodes must use the same one)"
@@ -372,10 +372,13 @@ INIT_TIME=\"${ts}\""
     status_ok "log ready" "${lf}"
   done
 
-  printf '\n'
-  success "init complete — ${MY_NAME} is ready"
-  printf '\n'
-  info "next step: ldown mesh start"
+  if [[ "${OPT_BOOTSTRAP:-false}" == "true" ]]; then
+    success "init complete — ${MY_NAME} — continuing bootstrap"
+  else
+    success "init complete — ${MY_NAME} is ready"
+    printf '\n'
+    info "next step: ldown mesh start"
+  fi
   printf '\n'
 
   # ── bootstrap: fetch bundle + ticket + auto-join ────────────────────────
@@ -418,6 +421,8 @@ INIT_TIME=\"${ts}\""
 
       # import bundle using existing logic
       info "importing bundle — enter the export passphrase"
+      export _BOOTSTRAP_ACTIVE=true
+      export LDOWN_YES=true
       cmd_mesh_import "${btmpfile}"
       rm -f "${btmpfile}"
     else
@@ -642,11 +647,12 @@ cmd_mesh_start() {
 # =============================================================================
 
 cmd_mesh_join() {
-  banner
+  [[ "${_BOOTSTRAP_ACTIVE:-false}" == "true" ]] || banner
   require_root
   check_dependency wg ncat
 
   # check for existing join process
+  if [[ "${_BOOTSTRAP_ACTIVE:-false}" != "true" ]]; then
   local existing_join
   existing_join=$(pgrep -f "ldown mesh join" 2>/dev/null | \
     grep -v "^$$\$" | head -1)
@@ -657,6 +663,7 @@ cmd_mesh_join() {
       { info "join cancelled"; exit 1; }
     kill "${existing_join}" 2>/dev/null || true
     sleep 1
+  fi
   fi
 
   step "verifying init"
@@ -1255,7 +1262,7 @@ EXPORTED_AT=${ts}"
 # =============================================================================
 
 cmd_mesh_import() {
-  banner
+  [[ "${_BOOTSTRAP_ACTIVE:-false}" == "true" ]] || banner
   require_root
   check_dependency openssl tar
 
@@ -1376,11 +1383,13 @@ cmd_mesh_import() {
 
   printf '\n'
   success "bundle imported successfully"
-  printf '\n'
-  info "next steps:"
-  printf '  1. ldown mesh init\n'
-  printf '  2. ldown mesh join\n'
-  printf '\n'
+  if [[ "${_BOOTSTRAP_ACTIVE:-false}" != "true" ]]; then
+    printf '\n'
+    info "next steps:"
+    printf '  1. ldown mesh init\n'
+    printf '  2. ldown mesh join\n'
+    printf '\n'
+  fi
 }
 
 # =============================================================================
