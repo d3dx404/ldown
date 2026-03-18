@@ -418,6 +418,7 @@ main() {
       for arg in "$@"; do
         case "${arg}" in
           --watch) OPT_WATCH=true ;;
+          --bootstrap) export OPT_BOOTSTRAP=true ;;
           *)       mesh_args+=("${arg}") ;;
         esac
       done

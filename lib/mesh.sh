@@ -102,6 +102,10 @@ cmd_mesh_init() {
         OPT_IP="${2:-}"
         shift 2
         ;;
+      --bootstrap)
+        OPT_BOOTSTRAP=true
+        shift
+        ;;
       *)
         shift
         ;;
@@ -373,6 +377,155 @@ INIT_TIME=\"${ts}\""
   printf '\n'
   info "next step: ldown mesh start"
   printf '\n'
+
+  # ── bootstrap: fetch bundle + ticket + auto-join ────────────────────────
+  if [[ "${OPT_BOOTSTRAP:-false}" == "true" ]]; then
+    local bport="${BOOTSTRAP_PORT:-51822}"
+    local czar_ip="${CZAR_IP}"
+    [[ -n "${czar_ip}" ]] || fatal "no czar IP found in roster — cannot bootstrap"
+
+    step "bootstrap from czar"
+    info "contacting ${czar_ip}:${bport}"
+
+    local bresp
+    bresp="$(printf 'BOOTSTRAP|%s\n' "${MY_NAME}" | ncat --wait 10 "${czar_ip}" "${bport}" 2>/dev/null)" || \
+      fatal "could not reach czar bootstrap at ${czar_ip}:${bport}"
+
+    [[ -n "${bresp}" ]] || fatal "empty response from czar bootstrap"
+
+    local bstatus
+    bstatus="$(head -1 <<< "${bresp}")"
+    [[ "${bstatus}" == "BOOTSTRAP_OK" ]] || fatal "bootstrap rejected: ${bstatus}"
+
+    # extract ticket
+    local bticket=""
+    bticket="$(grep '^TICKET:' <<< "${bresp}" | head -1 | cut -d: -f2-)"
+    if [[ -n "${bticket}" ]]; then
+      mkdir -p /etc/ldown/tickets 2>/dev/null || true
+      printf '%s\n' "${bticket}" > "/etc/ldown/tickets/${MY_NAME}"
+      chmod 600 "/etc/ldown/tickets/${MY_NAME}"
+      status_ok "ticket installed" "${MY_NAME}"
+    fi
+
+    # extract and save bundle
+    local bbundle_b64=""
+    bbundle_b64="$(grep '^BUNDLE_B64:' <<< "${bresp}" | head -1 | cut -d: -f2-)"
+    if [[ -n "${bbundle_b64}" ]]; then
+      local btmpfile
+      btmpfile="$(mktemp /tmp/ldown-bootstrap-bundle.XXXXXX)"
+      printf '%s' "${bbundle_b64}" | base64 -d > "${btmpfile}" 2>/dev/null
+      status_ok "bundle received" "$(wc -c < "${btmpfile}") bytes"
+
+      # import bundle using existing logic
+      info "importing bundle — enter the export passphrase"
+      cmd_mesh_import "${btmpfile}"
+      rm -f "${btmpfile}"
+    else
+      fatal "no bundle in bootstrap response"
+    fi
+
+    # auto-join
+    step "joining mesh"
+    cmd_mesh_join
+  fi
+}
+
+# =============================================================================
+# _mesh_bootstrap_serve
+# =============================================================================
+# temporary plaintext listener for onboarding new nodes
+# serves encrypted export bundle + auto-created ticket
+# runs on BOOTSTRAP_PORT, stopped when mesh restarts without --bootstrap
+# =============================================================================
+_mesh_bootstrap_serve() {
+  [[ "${MY_IS_CZAR:-false}" == "true" ]] || { warn "only czar can serve bootstrap"; return 1; }
+
+  local bport="${BOOTSTRAP_PORT:-51822}"
+  local bundle=""
+
+  # find or generate export bundle
+  bundle="$(find /home -maxdepth 3 -name 'ldown-export-*.tar.gz.enc' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)"
+  if [[ -z "${bundle}" ]]; then
+    bundle="$(find /root -maxdepth 3 -name 'ldown-export-*.tar.gz.enc' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)"
+  fi
+  if [[ -z "${bundle}" ]]; then
+    warn "no export bundle found — run: ldown mesh export first"
+    return 1
+  fi
+
+  local bundle_b64
+  bundle_b64="$(base64 -w0 < "${bundle}")"
+  local bundle_size=${#bundle_b64}
+
+  # write bootstrap handler
+  local bhandler
+  bhandler="$(mktemp /tmp/ldown-bootstrap.XXXXXX)"
+  cat > "${bhandler}" <<BEOF
+#!/usr/bin/env bash
+read -r -t 10 line || exit 0
+line="\${line%%\$'\r'}"
+[[ -z "\${line}" ]] && exit 0
+
+# parse: BOOTSTRAP|<name>
+IFS='|' read -ra bf <<< "\${line}"
+action="\${bf[0]:-}"
+bname="\${bf[1]:-}"
+
+if [[ "\${action}" != "BOOTSTRAP" || -z "\${bname}" ]]; then
+  printf 'ERROR invalid bootstrap request\n'
+  exit 1
+fi
+
+# validate name exists in roster
+roster_found=false
+while IFS= read -r rline; do
+  [[ "\${rline}" =~ --name[[:space:]]+([^[:space:]]+) ]] && {
+    [[ "\${BASH_REMATCH[1]}" == "\${bname}" ]] && roster_found=true
+  }
+done < "${ROSTER_CONF}"
+
+if [[ "\${roster_found}" != "true" ]]; then
+  printf 'ERROR %s not in roster\n' "\${bname}"
+  exit 1
+fi
+
+# auto-create ticket if missing
+ticket_dir="/etc/ldown/tickets"
+ticket_file="\${ticket_dir}/\${bname}"
+mkdir -p "\${ticket_dir}" 2>/dev/null || true
+if [[ ! -f "\${ticket_file}" ]]; then
+  token="\$(head -c32 /dev/urandom | base64 -w0)"
+  printf '%s\n' "\${token}" > "\${ticket_file}"
+  chmod 600 "\${ticket_file}"
+fi
+ticket=""
+read -r ticket < "\${ticket_file}" 2>/dev/null
+
+# respond
+printf 'BOOTSTRAP_OK\n'
+printf 'TICKET:%s\n' "\${ticket}"
+printf 'BUNDLE_SIZE:%s\n' "${bundle_size}"
+printf 'BUNDLE_B64:%s\n' "${bundle_b64}"
+printf 'END_BOOTSTRAP\n'
+BEOF
+  chmod 700 "${bhandler}"
+
+  # start bootstrap listener
+  (
+    trap "rm -f '${bhandler}'" EXIT
+    while true; do
+      ncat -l --keep-open "${MY_IP}" "${bport}" \
+        --sh-exec "bash ${bhandler}" \
+        --idle-timeout 30 \
+        2>/dev/null || true
+      sleep 3
+    done
+  ) &
+  local bpid=$!
+  echo "${bpid}" > /run/ldown/bootstrap.pid
+
+  status_ok "bootstrap listener" "pid ${bpid} on ${MY_IP}:${bport}"
+  warn "bootstrap mode is for onboarding only — restart without --bootstrap when done"
 }
 
 # =============================================================================
@@ -466,6 +619,9 @@ cmd_mesh_start() {
   export LDOWN_QUIET=false
   success "mesh started — ${MY_NAME} is live"
   printf '\n'
+  if [[ "${OPT_BOOTSTRAP:-false}" == "true" ]]; then
+    _mesh_bootstrap_serve
+  fi
   if [[ "${OPT_WATCH:-false}" == "true" ]]; then
     cmd_mesh_watch
   fi
