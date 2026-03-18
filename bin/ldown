@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-LDOWN_VERSION="0.1.0"
+LDOWN_VERSION="0.2.0-alpha"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../conf/defaults.conf"
@@ -394,6 +394,16 @@ cmd_handshake() {
 # ── dispatcher ─────────────────────────────────────────────
 
 main() {
+  # global flags
+  local -a _args=()
+  for _a in "$@"; do
+    case "${_a}" in
+      --yes|-y) export LDOWN_YES=true ;;
+      *) _args+=("${_a}") ;;
+    esac
+  done
+  set -- "${_args[@]}"
+
   case "${1:-}" in
     keygen) shift; cmd_keygen "$@" ;;
     keys)   shift; cmd_keys   "$@" ;;
@@ -442,7 +452,30 @@ main() {
           esac
           ;;
         logs)       cmd_mesh_watch_logs "$@" ;;
-        *) err "unknown mesh subcommand: ${subcmd}"; exit 1 ;;
+        help|--help|-h)
+          printf '\n'
+          printf '  %bmesh subcommands:%b\n\n' "${T_PINK}" "${C_RESET}"
+          printf '    %binit%b         initialize this node\n' "${T_BLUE}" "${C_RESET}"
+          printf '    %bstart%b        start mesh (czar only)\n' "${T_BLUE}" "${C_RESET}"
+          printf '    %bjoin%b         join existing mesh\n' "${T_BLUE}" "${C_RESET}"
+          printf '    %bleave%b        leave mesh cleanly\n' "${T_BLUE}" "${C_RESET}"
+          printf '    %bstatus%b       peer status table\n' "${T_BLUE}" "${C_RESET}"
+          printf '    %bwatch%b        live dashboard\n' "${T_BLUE}" "${C_RESET}"
+          printf '    %blogs%b         log viewer with history\n' "${T_BLUE}" "${C_RESET}"
+          printf '    %brecover%b      self-healing reconnect\n' "${T_BLUE}" "${C_RESET}"
+          printf '    %breset%b        wipe all state\n' "${T_BLUE}" "${C_RESET}"
+          printf '    %bdoctor%b       diagnose issues\n' "${T_BLUE}" "${C_RESET}"
+          printf '    %bdiff%b         compare local vs roster\n' "${T_BLUE}" "${C_RESET}"
+          printf '    %bneighbors%b    show neighbors\n' "${T_BLUE}" "${C_RESET}"
+          printf '    %bexport%b       create bundle for new nodes\n' "${T_BLUE}" "${C_RESET}"
+          printf '    %bimport <file>%b  install bundle\n' "${T_BLUE}" "${C_RESET}"
+          printf '    %bticket%b       manage admission tickets\n\n' "${T_BLUE}" "${C_RESET}"
+          printf '  %bflags:%b\n' "${T_PINK}" "${C_RESET}"
+          printf '    %b--watch%b      auto-open dashboard after start/join\n' "${C_GRAY}" "${C_RESET}"
+          printf '    %b--yes, -y%b    skip confirmation prompts\n\n' "${C_GRAY}" "${C_RESET}"
+          exit 0
+          ;;
+        *) err "unknown mesh subcommand: ${subcmd}"; printf '  run %bldown mesh help%b for usage\n' "${T_BLUE}" "${C_RESET}"; exit 1 ;;
       esac
       ;;
     listener)
@@ -498,15 +531,45 @@ main() {
 
       status_ok "ldown stopped" "all daemons killed"
       ;;
+    help|--help|-h|"")
+      banner
+      printf '  %busage:%b ldown <command> [options]\n' "${T_PINK}" "${C_RESET}"
+      printf '  %busage:%b ldown <command> --help\n\n' "${T_PINK}" "${C_RESET}"
+      printf '  %bglobal flags:%b\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %b--yes, -y%b     skip confirmation prompts\n' "${C_GRAY}" "${C_RESET}"
+      printf '    %b--help, -h%b    show help\n\n' "${C_GRAY}" "${C_RESET}"
+      printf '  %bmesh commands:%b\n' "${T_PINK}" "${C_RESET}"
+      printf '    %bmesh init%b       initialize this node for the mesh\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bmesh start%b      start the mesh (czar only)\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bmesh join%b       join an existing mesh\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bmesh leave%b      leave the mesh cleanly\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bmesh status%b     show peer status table\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bmesh watch%b      live dashboard\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bmesh logs%b       live log viewer with history\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bmesh recover%b    attempt self-healing reconnect\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bmesh reset%b      wipe all ldown state from this node\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bmesh doctor%b     diagnose common issues\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bmesh diff%b       compare local state vs roster\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bmesh neighbors%b  show discovered neighbors\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bmesh export%b     create encrypted bundle for new nodes\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bmesh import%b     install bundle from czar\n\n' "${T_BLUE}" "${C_RESET}"
+      printf '  %bticket commands:%b %b(czar only)%b\n' "${T_PINK}" "${C_RESET}" "${C_GRAY}" "${C_RESET}"
+      printf '    %bmesh ticket create <name>%b   generate admission ticket\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bmesh ticket list%b            show pending tickets\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bmesh ticket revoke <name>%b   destroy a ticket\n\n' "${T_BLUE}" "${C_RESET}"
+      printf '  %bother commands:%b\n' "${T_PINK}" "${C_RESET}"
+      printf '    %blistener start%b  start the control plane listener\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %blistener stop%b   stop the listener\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bkeygen%b          generate or manage WireGuard keypairs\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bkeys%b            display stored keypairs\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bmake_roster%b     build a roster interactively\n' "${T_BLUE}" "${C_RESET}"
+      printf '    %bstop%b            kill all ldown daemons\n\n' "${T_BLUE}" "${C_RESET}"
+      printf '  %bv%s — github.com/d3dx404/ldown%b\n\n' "${C_GRAY}" "${LDOWN_VERSION:-0.2.0-alpha}" "${C_RESET}"
+      exit 0
+      ;;
     *)
-      printf 'usage: ldown <command> [options]\n'
-      printf '\ncommands:\n'
-      printf '  keygen    generate or manage wireguard keypairs\n'
-      printf '  keys      display stored keypairs\n'
-      printf '  handshake   configure tunnel and verify peer connection\n'
-      printf '  mesh        form and manage the wireguard mesh\n'
-      printf '  listener    manage the listener daemon\n'
-      printf '  make_roster build a roster interactively\n'
+      err "unknown command: ${1:-}"
+      printf '  run %bldown help%b for usage\n' "${T_BLUE}" "${C_RESET}"
       exit 1
       ;;
   esac

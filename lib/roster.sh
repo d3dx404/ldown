@@ -324,10 +324,11 @@ _validate_roster() {
         local RELAY="${RELAY_IPS[$i]}"
         # check if relay IP looks like a private/internal address
         if [[ "$RELAY" =~ ^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.) ]]; then
-            [[ "${LDOWN_QUIET:-false}" != "true" ]] && \
-                warn "relay node ${RELAY} appears to be behind NAT"
-            [[ "${LDOWN_QUIET:-false}" != "true" ]] && \
-                warn "relay nodes should have public IPs for reliable forwarding"
+            if [[ "${LDOWN_QUIET:-false}" != "true" && -z "${_LDOWN_NAT_WARNED:-}" ]]; then
+              warn "relay node ${RELAY} appears to be behind NAT"
+              warn "relay nodes should have public IPs for reliable forwarding"
+              export _LDOWN_NAT_WARNED=1
+            fi
         fi
     done
 
