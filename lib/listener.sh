@@ -206,6 +206,10 @@ _do_join() {
   fi
   _peer_list "\${MY_NAME}"
   _llog "INFO" "JOIN complete \${name}"
+  # track for bootstrap progress
+  if [[ -f /run/ldown/bootstrap_joined ]]; then
+    printf '%s\n' "\${name}" >> /run/ldown/bootstrap_joined
+  fi
 
   # notify all existing peers about the new node
   # skip self, skip the joining node (they already have the list)

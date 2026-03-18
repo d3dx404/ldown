@@ -1949,19 +1949,19 @@ cmd_mesh_watch() {
         local bootstrap_meta="/run/ldown/bootstrap_meta"
         local bootstrap_tracker="/run/ldown/bootstrap_joined"
         local bpidfile="/run/ldown/bootstrap.pid"
+        local b_status_str="${T_DIM}· offline${RESET}"
         if [[ -f "${bootstrap_meta}" ]]; then
           local b_start="" b_timeout="" b_total="" b_closed=""
           while IFS='=' read -r bk bv; do
             case "${bk}" in
-              start)   b_start="${bv}" ;;
+              start) b_start="${bv}" ;;
               timeout) b_timeout="${bv}" ;;
-              total)   b_total="${bv}" ;;
-              closed)  b_closed="true" ;;
+              total) b_total="${bv}" ;;
+              closed) b_closed="true" ;;
             esac
           done < "${bootstrap_meta}"
           local b_joined=0
           [[ -f "${bootstrap_tracker}" ]] && b_joined=$(sort -u "${bootstrap_tracker}" 2>/dev/null | wc -l)
-          local b_status_str=""
           if [[ "${b_closed}" == "true" ]]; then
             if [[ "${b_joined}" -ge "${b_total}" ]]; then
               b_status_str="${T_BLUE}✓ complete${RESET} ${T_DIM}${b_joined}/${b_total} joined${RESET}"
@@ -1977,13 +1977,13 @@ cmd_mesh_watch() {
               [[ "${b_remaining}" -lt 0 ]] && b_remaining=0
               b_status_str="${T_PINK}✦ serving${RESET}  ${T_DIM}${b_joined}/${b_total} joined   ${b_remaining}s remaining${RESET}"
             else
-              b_status_str="${T_DIM}· inactive${RESET}"
+              b_status_str="${T_DIM}· offline${RESET}"
             fi
           fi
-          printf '\033[K  '
-          printf '%b%-10s%b' "${T_BLUE}" "bootstrap" "${RESET}"
-          printf '%s\n' "${b_status_str}"
         fi
+        printf '\033[K  '
+        printf '%b%-10s%b' "${T_BLUE}" "bootstrap" "${RESET}"
+        printf '%s\n' "${b_status_str}"
 
         _sep
 
