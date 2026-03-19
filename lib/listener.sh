@@ -101,6 +101,7 @@ _peer_list() {
 
 _do_join() {
   local name="\$1" tunnel_ip="\$2" public_ip="\$3" pubkey="\$4" node_pub="\$5" csr_b64="\${6:-}" ticket="\${7:-}"
+  [[ -n "\${NCAT_REMOTE_ADDR:-}" ]] && public_ip="\${NCAT_REMOTE_ADDR}"
   _llog "INFO" "JOIN \${name} (\${tunnel_ip}) from \${public_ip}"
   [[ -n "\${name}" && -n "\${tunnel_ip}" && -n "\${public_ip}" && -n "\${pubkey}" ]] || {
     printf 'ERROR missing fields\n'; return 1; }
