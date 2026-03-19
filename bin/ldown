@@ -415,13 +415,14 @@ main() {
       # parse --watch flag for start/join
       export OPT_WATCH=false
       local -a mesh_args=()
-      for arg in "$@"; do
-        case "${arg}" in
-          --watch) OPT_WATCH=true ;;
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --watch)     OPT_WATCH=true ;;
           --bootstrap) export OPT_BOOTSTRAP=true ;;
-          --time) export OPT_BOOTSTRAP_TIME="${2:-120}"; shift ;;
-          *)       mesh_args+=("${arg}") ;;
+          --time)      export OPT_BOOTSTRAP_TIME="${2:-120}"; shift ;;
+          *)           mesh_args+=("$1") ;;
         esac
+        shift
       done
       set -- "${mesh_args[@]+"${mesh_args[@]}"}"
       case "${subcmd}" in
