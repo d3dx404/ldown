@@ -36,3 +36,4 @@ conf/ldown.conf
 # ========================
 !conf/ldown.conf.example
 !conf/defaults.conf 
+conf/roster.conf

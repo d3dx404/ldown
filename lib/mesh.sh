@@ -2993,3 +2993,39 @@ cmd_ticket_revoke() {
     warn "no ticket found for ${name}"
   fi
 }
+
+# =============================================================================
+# cmd_ticket_create_from_roster
+# =============================================================================
+cmd_ticket_create_from_roster() {
+  require_root
+  source_if_exists "${MESH_CONF}"
+  [[ "${MY_IS_CZAR:-false}" == "true" ]] || fatal "only czar can create tickets"
+  roster_load "${ROSTER_CONF}" || fatal "roster failed to load"
+
+  local ticket_dir="/etc/ldown/tickets"
+  mkdir -p "${ticket_dir}" 2>/dev/null || true
+  chmod 700 "${ticket_dir}"
+
+  local created=0 skipped=0
+  local i
+  for i in "${!PEER_NAMES[@]}"; do
+    local name="${PEER_NAMES[$i]}"
+    [[ "${name}" == "${MY_NAME}" ]] && continue
+    if [[ -f "${ticket_dir}/${name}" ]]; then
+      info "ticket exists for ${name} — skipping"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    local token
+    token="$(head -c32 /dev/urandom | base64 -w0)"
+    printf '%s\n' "${token}" > "${ticket_dir}/${name}"
+    chmod 600 "${ticket_dir}/${name}"
+    status_ok "ticket created" "${name}"
+    created=$((created + 1))
+  done
+
+  printf '\n'
+  success "${created} tickets created, ${skipped} skipped"
+  printf '\n'
+}
