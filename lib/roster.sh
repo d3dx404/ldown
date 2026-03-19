@@ -114,7 +114,7 @@ _detect_my_ip() {
     for IP in "${CANDIDATES[@]}"; do
         [[ -z "$IP" ]] && continue
         # check if this IP appears as first field on any non-comment non-header line
-        if grep -vE '^\s*(#|$|SUBNET=|WG_PORT=|LDOWN_PORT=|CLUSTER_TOKEN=)' "$FILE" \
+        if grep -vE '^\s*(#|$|SUBNET=|WG_PORT=|LDOWN_PORT=|BOOTSTRAP_PORT=|CLUSTER_TOKEN=)' "$FILE" \
            | awk '{print $1}' \
            | grep -qx "$IP"; then
             echo "$IP"
@@ -371,7 +371,8 @@ _parse_roster() {
         fi
         if [[ "$LINE" =~ ^WG_PORT= ]];       then WG_PORT="${LINE#*=}";       continue; fi
         if [[ "$LINE" =~ ^LDOWN_PORT= ]];   then LDOWN_PORT="${LINE#*=}";   continue; fi
-        if [[ "$LINE" =~ ^CLUSTER_TOKEN= ]]; then continue; fi
+        if [[ "$LINE" =~ ^CLUSTER_TOKEN= ]];   then continue; fi
+        if [[ "$LINE" =~ ^BOOTSTRAP_PORT= ]];  then BOOTSTRAP_PORT="${LINE#*=}"; continue; fi
 
         # everything past here is a node line
         NODE_POSITION=$((NODE_POSITION + 1))
