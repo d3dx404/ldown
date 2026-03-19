@@ -178,10 +178,12 @@ cmd_mesh_init() {
     openssl pkey -in "${node_key}" -pubout -out "${node_pub}" 2>/dev/null
     chmod 600 "${node_key}"
     chmod 644 "${node_pub}"
-    status_ok "node signing keypair" "${node_pub}"
   else
     status_ok "node signing keypair exists" "${node_key} — skipping"
   fi
+  [[ -f "${node_key}" && -s "${node_key}" ]] || fatal "node signing key generation failed — ${node_key} missing or empty"
+  [[ -f "${node_pub}" && -s "${node_pub}" ]] || fatal "node signing pubkey generation failed — ${node_pub} missing or empty"
+  status_ok "node signing keypair" "${node_pub}"
 
   # ── czar signing keypair ────────────────────────────────
   if [[ "${MY_IS_CZAR}" == "true" ]]; then
@@ -919,23 +921,6 @@ cmd_mesh_join() {
   step "assembling final config"
   wg_assemble_config "${WG_DIR}" "${WG_INTERFACE}"
   status_ok "config written" "${WG_DIR}/${WG_INTERFACE}.conf"
-
-  step "verifying handshakes"
-
-  local peer_name peer_pubkey
-  for peer_name in "${!_joined_pubkeys[@]}"; do
-    [[ "${peer_name}" == "${MY_NAME}" ]] && continue
-    peer_pubkey="${_joined_pubkeys[$peer_name]}"
-    local attempt
-    for (( attempt = 1; attempt <= 20; attempt++ )); do
-      if _mesh_check_peer_handshake "${WG_INTERFACE}" "${peer_pubkey}"; then
-        status_ok "${peer_name}" "handshake confirmed"
-        break
-      fi
-      sleep 1
-    done
-    [[ $attempt -gt 20 ]] && status_warn "${peer_name}" "no handshake yet — sync loop will connect within 30s"
-  done
 
   printf '\n'
   divider
