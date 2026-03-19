@@ -666,12 +666,11 @@ cmd_listener_start() {
 
   (
     while true; do
-      ncat -l --keep-open "${MY_IP}" "${LDOWN_PORT}" \
+      ncat -l "${MY_IP}" "${LDOWN_PORT}" \
         --ssl --ssl-cert "${TLS_CERT}" --ssl-key "${TLS_KEY}" \
         --sh-exec "bash ${handler}" \
-        --idle-timeout 5 \
+        -w 10 \
         2>>"${LOG_LISTENER}" || true
-      sleep 3
     done
     rm -f "${handler}"
   ) &
