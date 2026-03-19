@@ -664,7 +664,6 @@ cmd_listener_start() {
   _listener_log "INFO" "starting on ${MY_IP}:${LDOWN_PORT} (czar=${MY_IS_CZAR})"
 
   (
-    trap 'rm -f "${handler}"' EXIT
     while true; do
       ncat -l --keep-open "${MY_IP}" "${LDOWN_PORT}" \
         --ssl --ssl-cert "${TLS_CERT}" --ssl-key "${TLS_KEY}" \
@@ -673,6 +672,7 @@ cmd_listener_start() {
         2>>"${LOG_LISTENER}" || true
       sleep 3
     done
+    rm -f "${handler}"
   ) &
 
   local lpid=$!

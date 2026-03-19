@@ -624,7 +624,17 @@ cmd_mesh_start() {
     rm -f "${pidfile}" /tmp/ldown-handler.* 2>/dev/null || true
     status_ok "listener cleared" "pid ${listener_pid:-unknown}"
   fi
-                               
+
+  # kill any stale sync daemon
+  local sync_pid=""
+  local sync_pidfile="/run/ldown/sync.pid"
+  if [[ -f "${sync_pidfile}" ]]; then
+    { read -r sync_pid < "${sync_pidfile}"; } 2>/dev/null
+    [[ -n "${sync_pid}" ]] && kill "${sync_pid}" 2>/dev/null || true
+    rm -f "${sync_pidfile}" 2>/dev/null || true
+    status_ok "sync cleared" "pid ${sync_pid:-unknown}"
+  fi
+
   sleep 0.5
   status_ok "pre-flight done" "ready to start"
   step "verifying init"
@@ -715,6 +725,39 @@ cmd_mesh_join() {
     sleep 1
   fi
   fi
+
+  # ── pre-flight teardown ─────────────────────────────────
+  step "pre-flight cleanup"
+
+  fuser -k "${LDOWN_PORT}"/tcp 2>/dev/null || true
+  pkill -f "ncat.*${LDOWN_PORT}" 2>/dev/null || true
+
+  if is_valid_iface "${WG_INTERFACE}"; then
+    wg-quick down "${WG_INTERFACE}" 2>/dev/null || \
+      ip link delete "${WG_INTERFACE}" 2>/dev/null || true
+    status_ok "interface cleared" "${WG_INTERFACE}"
+  fi
+
+  local join_lpid=""
+  local join_lpidfile="/run/ldown/listener.pid"
+  if [[ -f "${join_lpidfile}" ]]; then
+    { read -r join_lpid < "${join_lpidfile}"; } 2>/dev/null
+    [[ -n "${join_lpid}" ]] && kill "${join_lpid}" 2>/dev/null || true
+    rm -f "${join_lpidfile}" /tmp/ldown-handler.* 2>/dev/null || true
+    status_ok "listener cleared" "pid ${join_lpid:-unknown}"
+  fi
+
+  local join_spid=""
+  local join_spidfile="/run/ldown/sync.pid"
+  if [[ -f "${join_spidfile}" ]]; then
+    { read -r join_spid < "${join_spidfile}"; } 2>/dev/null
+    [[ -n "${join_spid}" ]] && kill "${join_spid}" 2>/dev/null || true
+    rm -f "${join_spidfile}" 2>/dev/null || true
+    status_ok "sync cleared" "pid ${join_spid:-unknown}"
+  fi
+
+  sleep 0.5
+  status_ok "pre-flight done" "ready to join"
 
   step "verifying init"
 
