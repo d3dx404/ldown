@@ -449,10 +449,9 @@ _mesh_bootstrap_serve() {
   local timeout="${OPT_BOOTSTRAP_TIME:-120}"
   local bundle=""
 
-  bundle="$(find /home -maxdepth 3 -name 'ldown-export-*.tar.gz.enc' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)"
-  if [[ -z "${bundle}" ]]; then
-    bundle="$(find /root -maxdepth 3 -name 'ldown-export-*.tar.gz.enc' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)"
-  fi
+  bundle="$(find "${CONFIG_DIR}" /root /home -maxdepth 3 \
+    -name 'ldown-export-*.tar.gz.enc' -printf '%T@ %p\n' 2>/dev/null \
+    | sort -rn | head -1 | cut -d' ' -f2)"
   if [[ -z "${bundle}" ]]; then
     warn "no export bundle found — run: ldown mesh export first"
     return 1
@@ -685,6 +684,15 @@ cmd_mesh_start() {
   success "mesh started — ${MY_NAME} is live"
   printf '\n'
   if [[ "${OPT_BOOTSTRAP:-false}" == "true" ]]; then
+    # check for export bundle — auto-generate if missing
+    local _bundle
+    _bundle="$(find "${CONFIG_DIR}" /root /home -maxdepth 3 \
+      -name 'ldown-export-*.tar.gz.enc' -printf '%T@ %p\n' 2>/dev/null \
+      | sort -rn | head -1 | cut -d' ' -f2)"
+    if [[ -z "${_bundle}" ]]; then
+      info "no export bundle found — generating one now"
+      cmd_mesh_export "${CONFIG_DIR}"
+    fi
     _mesh_bootstrap_serve
   fi
   if [[ "${OPT_WATCH:-false}" == "true" ]]; then
