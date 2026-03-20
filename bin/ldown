@@ -415,13 +415,14 @@ main() {
       # parse --watch flag for start/join
       export OPT_WATCH=false
       local -a mesh_args=()
-      for arg in "$@"; do
-        case "${arg}" in
-          --watch) OPT_WATCH=true ;;
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --watch)     OPT_WATCH=true ;;
           --bootstrap) export OPT_BOOTSTRAP=true ;;
-          --time) export OPT_BOOTSTRAP_TIME="${2:-120}"; shift ;;
-          *)       mesh_args+=("${arg}") ;;
+          --time)      export OPT_BOOTSTRAP_TIME="${2:-120}"; shift ;;
+          *)           mesh_args+=("$1") ;;
         esac
+        shift
       done
       set -- "${mesh_args[@]+"${mesh_args[@]}"}"
       case "${subcmd}" in
@@ -433,13 +434,11 @@ main() {
         export)     cmd_mesh_export     "$@" ;;
         import)     cmd_mesh_import     "$@" ;;
         reset)      cmd_mesh_reset      "$@" ;;
-        status)     cmd_mesh_status     "$@" ;;
-        doctor)     cmd_mesh_doctor     "$@" ;;
-        diff)       cmd_mesh_diff       "$@" ;;
-        neighbors)  cmd_mesh_neighbors  "$@" ;;
         watch)
           if [[ "${1:-}" == "--logs" ]]; then
             cmd_mesh_watch_logs
+          elif [[ "${1:-}" == "--once" ]]; then
+            cmd_mesh_status "$@"
           else
             cmd_mesh_watch "$@"
           fi
@@ -447,7 +446,13 @@ main() {
         ticket)
           local ticket_cmd="${1:-}"; shift || true
           case "${ticket_cmd}" in
-            create)  cmd_ticket_create "$@" ;;
+            create)
+              if [[ "${1:-}" == "--from-roster" ]]; then
+                cmd_ticket_create_from_roster
+              else
+                cmd_ticket_create "$@"
+              fi
+              ;;
             list)    cmd_ticket_list ;;
             revoke)  cmd_ticket_revoke "$@" ;;
             *)       err "usage: ldown mesh ticket {create|list|revoke} [name]"; exit 1 ;;
@@ -466,9 +471,6 @@ main() {
           printf '    %blogs%b         log viewer with history\n' "${T_BLUE}" "${C_RESET}"
           printf '    %brecover%b      self-healing reconnect\n' "${T_BLUE}" "${C_RESET}"
           printf '    %breset%b        wipe all state\n' "${T_BLUE}" "${C_RESET}"
-          printf '    %bdoctor%b       diagnose issues\n' "${T_BLUE}" "${C_RESET}"
-          printf '    %bdiff%b         compare local vs roster\n' "${T_BLUE}" "${C_RESET}"
-          printf '    %bneighbors%b    show neighbors\n' "${T_BLUE}" "${C_RESET}"
           printf '    %bexport%b       create bundle for new nodes\n' "${T_BLUE}" "${C_RESET}"
           printf '    %bimport <file>%b  install bundle\n' "${T_BLUE}" "${C_RESET}"
           printf '    %bticket%b       manage admission tickets\n\n' "${T_BLUE}" "${C_RESET}"

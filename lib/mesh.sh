@@ -178,10 +178,12 @@ cmd_mesh_init() {
     openssl pkey -in "${node_key}" -pubout -out "${node_pub}" 2>/dev/null
     chmod 600 "${node_key}"
     chmod 644 "${node_pub}"
-    status_ok "node signing keypair" "${node_pub}"
   else
     status_ok "node signing keypair exists" "${node_key} — skipping"
   fi
+  [[ -f "${node_key}" && -s "${node_key}" ]] || fatal "node signing key generation failed — ${node_key} missing or empty"
+  [[ -f "${node_pub}" && -s "${node_pub}" ]] || fatal "node signing pubkey generation failed — ${node_pub} missing or empty"
+  status_ok "node signing keypair" "${node_pub}"
 
   # ── czar signing keypair ────────────────────────────────
   if [[ "${MY_IS_CZAR}" == "true" ]]; then
@@ -449,10 +451,9 @@ _mesh_bootstrap_serve() {
   local timeout="${OPT_BOOTSTRAP_TIME:-120}"
   local bundle=""
 
-  bundle="$(find /home -maxdepth 3 -name 'ldown-export-*.tar.gz.enc' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)"
-  if [[ -z "${bundle}" ]]; then
-    bundle="$(find /root -maxdepth 3 -name 'ldown-export-*.tar.gz.enc' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2)"
-  fi
+  bundle="$(find "${CONFIG_DIR}" /root /home -maxdepth 3 \
+    -name 'ldown-export-*.tar.gz.enc' -printf '%T@ %p\n' 2>/dev/null \
+    | sort -rn | head -1 | cut -d' ' -f2)"
   if [[ -z "${bundle}" ]]; then
     warn "no export bundle found — run: ldown mesh export first"
     return 1
@@ -624,7 +625,17 @@ cmd_mesh_start() {
     rm -f "${pidfile}" /tmp/ldown-handler.* 2>/dev/null || true
     status_ok "listener cleared" "pid ${listener_pid:-unknown}"
   fi
-                               
+
+  # kill any stale sync daemon
+  local sync_pid=""
+  local sync_pidfile="/run/ldown/sync.pid"
+  if [[ -f "${sync_pidfile}" ]]; then
+    { read -r sync_pid < "${sync_pidfile}"; } 2>/dev/null
+    [[ -n "${sync_pid}" ]] && kill "${sync_pid}" 2>/dev/null || true
+    rm -f "${sync_pidfile}" 2>/dev/null || true
+    status_ok "sync cleared" "pid ${sync_pid:-unknown}"
+  fi
+
   sleep 0.5
   status_ok "pre-flight done" "ready to start"
   step "verifying init"
@@ -675,6 +686,15 @@ cmd_mesh_start() {
   success "mesh started — ${MY_NAME} is live"
   printf '\n'
   if [[ "${OPT_BOOTSTRAP:-false}" == "true" ]]; then
+    # check for export bundle — auto-generate if missing
+    local _bundle
+    _bundle="$(find "${CONFIG_DIR}" /root /home -maxdepth 3 \
+      -name 'ldown-export-*.tar.gz.enc' -printf '%T@ %p\n' 2>/dev/null \
+      | sort -rn | head -1 | cut -d' ' -f2)"
+    if [[ -z "${_bundle}" ]]; then
+      info "no export bundle found — generating one now"
+      cmd_mesh_export "${CONFIG_DIR}"
+    fi
     _mesh_bootstrap_serve
   fi
   if [[ "${OPT_WATCH:-false}" == "true" ]]; then
@@ -715,6 +735,39 @@ cmd_mesh_join() {
     sleep 1
   fi
   fi
+
+  # ── pre-flight teardown ─────────────────────────────────
+  step "pre-flight cleanup"
+
+  fuser -k "${LDOWN_PORT}"/tcp 2>/dev/null || true
+  pkill -f "ncat.*${LDOWN_PORT}" 2>/dev/null || true
+
+  if is_valid_iface "${WG_INTERFACE}"; then
+    wg-quick down "${WG_INTERFACE}" 2>/dev/null || \
+      ip link delete "${WG_INTERFACE}" 2>/dev/null || true
+    status_ok "interface cleared" "${WG_INTERFACE}"
+  fi
+
+  local join_lpid=""
+  local join_lpidfile="/run/ldown/listener.pid"
+  if [[ -f "${join_lpidfile}" ]]; then
+    { read -r join_lpid < "${join_lpidfile}"; } 2>/dev/null
+    [[ -n "${join_lpid}" ]] && kill "${join_lpid}" 2>/dev/null || true
+    rm -f "${join_lpidfile}" /tmp/ldown-handler.* 2>/dev/null || true
+    status_ok "listener cleared" "pid ${join_lpid:-unknown}"
+  fi
+
+  local join_spid=""
+  local join_spidfile="/run/ldown/sync.pid"
+  if [[ -f "${join_spidfile}" ]]; then
+    { read -r join_spid < "${join_spidfile}"; } 2>/dev/null
+    [[ -n "${join_spid}" ]] && kill "${join_spid}" 2>/dev/null || true
+    rm -f "${join_spidfile}" 2>/dev/null || true
+    status_ok "sync cleared" "pid ${join_spid:-unknown}"
+  fi
+
+  sleep 0.5
+  status_ok "pre-flight done" "ready to join"
 
   step "verifying init"
 
@@ -868,23 +921,6 @@ cmd_mesh_join() {
   step "assembling final config"
   wg_assemble_config "${WG_DIR}" "${WG_INTERFACE}"
   status_ok "config written" "${WG_DIR}/${WG_INTERFACE}.conf"
-
-  step "verifying handshakes"
-
-  local peer_name peer_pubkey
-  for peer_name in "${!_joined_pubkeys[@]}"; do
-    [[ "${peer_name}" == "${MY_NAME}" ]] && continue
-    peer_pubkey="${_joined_pubkeys[$peer_name]}"
-    local attempt
-    for (( attempt = 1; attempt <= 20; attempt++ )); do
-      if _mesh_check_peer_handshake "${WG_INTERFACE}" "${peer_pubkey}"; then
-        status_ok "${peer_name}" "handshake confirmed"
-        break
-      fi
-      sleep 1
-    done
-    [[ $attempt -gt 20 ]] && status_warn "${peer_name}" "no handshake yet — sync loop will connect within 30s"
-  done
 
   printf '\n'
   divider
@@ -2992,4 +3028,40 @@ cmd_ticket_revoke() {
   else
     warn "no ticket found for ${name}"
   fi
+}
+
+# =============================================================================
+# cmd_ticket_create_from_roster
+# =============================================================================
+cmd_ticket_create_from_roster() {
+  require_root
+  source_if_exists "${MESH_CONF}"
+  [[ "${MY_IS_CZAR:-false}" == "true" ]] || fatal "only czar can create tickets"
+  roster_load "${ROSTER_CONF}" || fatal "roster failed to load"
+
+  local ticket_dir="/etc/ldown/tickets"
+  mkdir -p "${ticket_dir}" 2>/dev/null || true
+  chmod 700 "${ticket_dir}"
+
+  local created=0 skipped=0
+  local i
+  for i in "${!PEER_NAMES[@]}"; do
+    local name="${PEER_NAMES[$i]}"
+    [[ "${name}" == "${MY_NAME}" ]] && continue
+    if [[ -f "${ticket_dir}/${name}" ]]; then
+      info "ticket exists for ${name} — skipping"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    local token
+    token="$(head -c32 /dev/urandom | base64 -w0)"
+    printf '%s\n' "${token}" > "${ticket_dir}/${name}"
+    chmod 600 "${ticket_dir}/${name}"
+    status_ok "ticket created" "${name}"
+    created=$((created + 1))
+  done
+
+  printf '\n'
+  success "${created} tickets created, ${skipped} skipped"
+  printf '\n'
 }

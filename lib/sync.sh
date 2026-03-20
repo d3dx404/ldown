@@ -127,6 +127,40 @@ _sync_check_peer() {
   # poke the peer to trigger handshake
   ping -c1 -W2 "${peer_tunnel}" &>/dev/null || true
   _slog "INFO" "re-added ${peer_name} (${peer_tunnel})"
+
+  # verify re-add worked — check handshake after 3s
+  sleep 3
+  local new_hs
+  new_hs=$(wg show "${WG_INTERFACE}" latest-handshakes 2>/dev/null \
+    | awk -v key="${pubkey}" '$1==key{print $2}')
+  local new_age=$(( now - ${new_hs:-0} ))
+
+  local fail_file="/run/ldown/peer_fail_${peer_name}"
+  if [[ -n "${new_hs}" && "${new_hs}" != "0" && "${new_age}" -lt "${SYNC_STALE_THRESHOLD}" ]]; then
+    # handshake came up — clear failure counter
+    rm -f "${fail_file}"
+    return 0
+  fi
+
+  # still no handshake — increment failure counter
+  local fail_count=0
+  [[ -f "${fail_file}" ]] && { read -r fail_count < "${fail_file}"; } 2>/dev/null
+  fail_count=$(( fail_count + 1 ))
+  printf '%s\n' "${fail_count}" > "${fail_file}"
+  _slog "WARN" "peer ${peer_name} still unreachable after re-add (attempt ${fail_count})"
+
+  # after 3 consecutive failures — report to czar
+  if (( fail_count >= 3 )); then
+    _slog "WARN" "peer ${peer_name} unreachable — reporting to czar"
+    local report_raw="REPORT PEER_DOWN ${peer_name}"
+    local report_payload
+    report_payload="$(make_payload "${report_raw}")"
+    local report_sig
+    report_sig=$(sign_msg "${report_payload}")
+    printf '%s\n' "${report_sig} ${report_payload}" \
+      | ncat --ssl --wait 5 "${CZAR_IP}" "${LDOWN_PORT}" &>/dev/null || true
+    rm -f "${fail_file}"
+  fi
 }
 
 # =============================================================================
