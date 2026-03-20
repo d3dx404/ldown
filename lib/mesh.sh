@@ -909,7 +909,7 @@ cmd_mesh_join() {
       endpoint "${peer_endpoint}"
     )
     [[ -n "${peer_keepalive:-}" ]] && wg_args+=(persistent-keepalive "${peer_keepalive}")
-    [[ -f "${KEY_DIR}/mesh.psk" ]] && wg_args+=(preshared-key <(cat "${KEY_DIR}/mesh.psk"))
+    [[ -f "${KEY_DIR}/mesh.psk" ]] && wg_args+=(preshared-key "${KEY_DIR}/mesh.psk")
 
     must "add peer ${peer_name}" "${wg_args[@]}"
     _joined_pubkeys["${peer_name}"]="${peer_pubkey}"
@@ -1175,7 +1175,7 @@ cmd_mesh_recover() {
       endpoint "${peer_ip}:${peer_port}"
     )
     [[ -n "${peer_keepalive}" ]] && wg_args+=(persistent-keepalive "${peer_keepalive}")
-    [[ -f "${KEY_DIR}/mesh.psk" ]] && wg_args+=(preshared-key <(cat "${KEY_DIR}/mesh.psk"))
+    [[ -f "${KEY_DIR}/mesh.psk" ]] && wg_args+=(preshared-key "${KEY_DIR}/mesh.psk")
 
     must "add peer ${peer_name}" "${wg_args[@]}"
     _recovered_pubkeys[$i]="${peer_pubkey}"
