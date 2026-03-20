@@ -434,13 +434,11 @@ main() {
         export)     cmd_mesh_export     "$@" ;;
         import)     cmd_mesh_import     "$@" ;;
         reset)      cmd_mesh_reset      "$@" ;;
-        status)     cmd_mesh_status     "$@" ;;
-        doctor)     cmd_mesh_doctor     "$@" ;;
-        diff)       cmd_mesh_diff       "$@" ;;
-        neighbors)  cmd_mesh_neighbors  "$@" ;;
         watch)
           if [[ "${1:-}" == "--logs" ]]; then
             cmd_mesh_watch_logs
+          elif [[ "${1:-}" == "--once" ]]; then
+            cmd_mesh_status "$@"
           else
             cmd_mesh_watch "$@"
           fi
@@ -473,9 +471,6 @@ main() {
           printf '    %blogs%b         log viewer with history\n' "${T_BLUE}" "${C_RESET}"
           printf '    %brecover%b      self-healing reconnect\n' "${T_BLUE}" "${C_RESET}"
           printf '    %breset%b        wipe all state\n' "${T_BLUE}" "${C_RESET}"
-          printf '    %bdoctor%b       diagnose issues\n' "${T_BLUE}" "${C_RESET}"
-          printf '    %bdiff%b         compare local vs roster\n' "${T_BLUE}" "${C_RESET}"
-          printf '    %bneighbors%b    show neighbors\n' "${T_BLUE}" "${C_RESET}"
           printf '    %bexport%b       create bundle for new nodes\n' "${T_BLUE}" "${C_RESET}"
           printf '    %bimport <file>%b  install bundle\n' "${T_BLUE}" "${C_RESET}"
           printf '    %bticket%b       manage admission tickets\n\n' "${T_BLUE}" "${C_RESET}"
