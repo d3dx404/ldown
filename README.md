@@ -13,6 +13,11 @@ ldown forms a full WireGuard mesh between nodes using only a shared roster file.
 
 ---
 
+
+## Demo
+
+[![asciicast](https://asciinema.org/a/GMJKhltfInup2XDV.svg)](https://asciinema.org/a/GMJKhltfInup2XDV)
+
 ## Requirements
 
 - Kali / Debian-based Linux
