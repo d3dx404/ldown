@@ -1,7 +1,7 @@
 # ldown
 Deterministic self-healing WireGuard mesh orchestrator for Linux — written entirely in bash.
 
-> v0.2.0-alpha — actively in development
+> v0.2.1-alpha — actively in development
 
 ---
 
