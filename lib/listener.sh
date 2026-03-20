@@ -587,6 +587,34 @@ case "\${action}" in
   PING)
     printf 'PONG\n'
     ;;
+  REPORT)
+    # p[0]=sig p[1]=REPORT p[2]=PEER_DOWN p[3]=peer_name
+    [[ "\${MY_IS_CZAR}" == "true" ]] || { printf 'ERROR not czar\n'; exit 1; }
+    _report_type="\${p[2]:-}"
+    _report_peer="\${p[3]:-}"
+    [[ -n "\${_report_peer}" ]] || { printf 'ERROR missing peer name\n'; exit 1; }
+    _llog "WARN" "REPORT \${_report_type} for \${_report_peer} from \${NCAT_REMOTE_ADDR}"
+    if [[ "\${_report_type}" == "PEER_DOWN" ]]; then
+      # find peer in roster and broadcast fresh PEER_ADD to all nodes
+      _found_i=-1
+      for _ri in "\${!PEER_NAMES[@]}"; do
+        [[ "\${PEER_NAMES[\$_ri]}" == "\${_report_peer}" ]] && { _found_i=\$_ri; break; }
+      done
+      if (( _found_i >= 0 )); then
+        _rpubfile="\${KEY_DIR}/\${_report_peer}.public.key"
+        _rpubkey=""
+        { read -r _rpubkey < "\${_rpubfile}"; } 2>/dev/null
+        if [[ -n "\${_rpubkey}" ]]; then
+          _llog "INFO" "broadcasting fresh PEER_ADD for \${_report_peer} to all nodes"
+          _notify_peers_of_join "\${_report_peer}" \
+            "\${PEER_TUNNEL_IPS[\$_found_i]}" \
+            "\${PEER_IPS[\$_found_i]}" \
+            "\${_rpubkey}"
+        fi
+      fi
+    fi
+    printf 'OK\n'
+    ;;
   *)
     _llog "WARN" "unknown action: \${action}"
     printf 'ERROR unknown action\n'
